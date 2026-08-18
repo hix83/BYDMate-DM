@@ -8,6 +8,7 @@
 /app/build
 /helper-dex/build
 /captures
+/diagnostics/
 .externalNativeBuild
 .cxx
 *.apk
