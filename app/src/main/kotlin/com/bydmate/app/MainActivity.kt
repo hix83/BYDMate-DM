@@ -19,6 +19,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.bydmate.app.data.local.LocalePreferences
@@ -64,6 +66,11 @@ class MainActivity : AppCompatActivity() {
         requestPermissionsIfNeeded()
 
         setContent {
+            // Keep the real window configuration in the composition. This is important
+            // for freeform/multi-window mode: the Activity is not necessarily recreated
+            // when the user resizes its window.
+            val windowConfiguration = LocalConfiguration.current
+            val systemDensity = LocalDensity.current
             val thresholds by produceState(initialValue = ConsumptionThresholds.Default) {
                 settingsRepository.observeConsumptionThresholds().collect { (good, bad) ->
                     value = ConsumptionThresholds(good = good, bad = bad)
@@ -102,15 +109,44 @@ class MainActivity : AppCompatActivity() {
                 onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
             }
 
-            val localizedConfig = remember(lang) {
-                Configuration(resources.configuration).apply {
+            val localizedConfig = remember(
+                lang,
+                windowConfiguration.screenWidthDp,
+                windowConfiguration.screenHeightDp,
+                windowConfiguration.orientation,
+                windowConfiguration.densityDpi,
+                windowConfiguration.fontScale,
+            ) {
+                Configuration(windowConfiguration).apply {
                     setLocale(Locale.forLanguageTag(lang))
                 }
+            }
+            val compactScale = remember(
+                windowConfiguration.screenWidthDp,
+                windowConfiguration.screenHeightDp,
+            ) {
+                adaptiveUiScale(
+                    widthDp = windowConfiguration.screenWidthDp,
+                    heightDp = windowConfiguration.screenHeightDp,
+                )
+            }
+            val adaptiveDensity = remember(
+                systemDensity.density,
+                systemDensity.fontScale,
+                compactScale,
+            ) {
+                // Scaling Density keeps dp and sp proportional while retaining the
+                // user's fontScale. Normal/full-screen windows stay exactly at 1f.
+                Density(
+                    density = systemDensity.density * compactScale,
+                    fontScale = systemDensity.fontScale,
+                )
             }
 
             BYDMateTheme {
                 CompositionLocalProvider(
                     LocalConfiguration provides localizedConfig,
+                    LocalDensity provides adaptiveDensity,
                     LocalConsumptionThresholds provides thresholds,
                 ) {
                     AppNavigation(
@@ -214,4 +250,12 @@ class MainActivity : AppCompatActivity() {
     private fun startTrackingService() {
         TrackingService.start(this)
     }
+}
+
+internal fun adaptiveUiScale(widthDp: Int, heightDp: Int): Float = when {
+    heightDp < 360 -> 0.72f
+    widthDp < 500 && heightDp < 700 -> 0.72f
+    heightDp < 480 -> 0.80f
+    heightDp < 600 && widthDp < 900 -> 0.88f
+    else -> 1f
 }

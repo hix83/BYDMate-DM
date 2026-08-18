@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -74,7 +76,12 @@ fun TripsScreen(
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         // Period chips
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+        ) {
             TripsChip(stringResource(R.string.dashboard_period_day), state.period == TripPeriod.TODAY) { viewModel.setPeriod(TripPeriod.TODAY) }
             TripsChip(stringResource(R.string.dashboard_period_week), state.period == TripPeriod.WEEK) { viewModel.setPeriod(TripPeriod.WEEK) }
             TripsChip(stringResource(R.string.dashboard_period_month), state.period == TripPeriod.MONTH) { viewModel.setPeriod(TripPeriod.MONTH) }

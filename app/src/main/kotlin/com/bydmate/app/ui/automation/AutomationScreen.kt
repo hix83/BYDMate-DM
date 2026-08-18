@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Apps
@@ -117,6 +118,7 @@ fun AutomationScreen(
     viewModel: AutomationViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val compactWindow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 900
     val filtered = remember(state.rules, state.filter) {
         when (state.filter) {
             RuleFilter.ALL -> state.rules
@@ -133,17 +135,22 @@ fun AutomationScreen(
     ) {
         // Header
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (compactWindow) Modifier.horizontalScroll(rememberScrollState())
+                    else Modifier
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(stringResource(R.string.automation_tab_title), fontSize = 22.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-            Spacer(Modifier.width(16.dp))
+            if (compactWindow) Spacer(Modifier.width(16.dp)) else Spacer(Modifier.weight(1f))
             AutoChip(stringResource(R.string.automation_filter_all), state.filter == RuleFilter.ALL) { viewModel.setFilter(RuleFilter.ALL) }
             Spacer(Modifier.width(4.dp))
             AutoChip(stringResource(R.string.automation_filter_active), state.filter == RuleFilter.ENABLED) { viewModel.setFilter(RuleFilter.ENABLED) }
             Spacer(Modifier.width(4.dp))
             AutoChip(stringResource(R.string.automation_filter_disabled), state.filter == RuleFilter.DISABLED) { viewModel.setFilter(RuleFilter.DISABLED) }
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(16.dp))
             Button(
                 onClick = { viewModel.showJournal() },
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
@@ -362,6 +369,8 @@ private fun EditorDialog(
     onTestAction: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val compactWindow = configuration.screenWidthDp < 900 || configuration.screenHeightDp < 600
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -372,8 +381,8 @@ private fun EditorDialog(
         val context = LocalContext.current
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.65f)
-                .fillMaxHeight(0.85f)
+                .fillMaxWidth(if (compactWindow) 0.96f else 0.65f)
+                .fillMaxHeight(if (compactWindow) 0.94f else 0.85f)
                 .background(NavyDeep, RoundedCornerShape(16.dp))
                 .border(1.5.dp, CardBorder, RoundedCornerShape(16.dp))
         ) {
@@ -1633,6 +1642,7 @@ private fun CatalogDropdown(
 
 @Composable
 private fun JournalDialog(logs: List<RuleLogEntity>, onDismiss: () -> Unit) {
+    val compactWindow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 900
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1640,8 +1650,8 @@ private fun JournalDialog(logs: List<RuleLogEntity>, onDismiss: () -> Unit) {
         val context = LocalContext.current
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.4f)
-                .fillMaxHeight(0.75f)
+                .fillMaxWidth(if (compactWindow) 0.92f else 0.4f)
+                .fillMaxHeight(if (compactWindow) 0.9f else 0.75f)
                 .background(NavyDeep, RoundedCornerShape(16.dp))
                 .border(1.5.dp, CardBorder, RoundedCornerShape(16.dp))
         ) {

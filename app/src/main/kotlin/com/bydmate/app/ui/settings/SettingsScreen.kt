@@ -93,6 +93,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.filled.Visibility
@@ -160,6 +161,7 @@ fun SettingsScreen(
     onNavigateToAgentChat: () -> Unit = {},
     onNavigateToVoiceJournal: () -> Unit = {},
 ) {
+    val compactWindow = LocalConfiguration.current.screenWidthDp < 900
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Recalculate confirmation dialog
@@ -244,7 +246,7 @@ fun SettingsScreen(
 
         Row(
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compactWindow) 8.dp else 16.dp),
         ) {
             SettingsRail(
                 selected = safeSelected,
@@ -252,7 +254,9 @@ fun SettingsScreen(
                 appVersion = state.appVersion,
                 onSelect = { selected = it },
                 onVersionTap = { viewModel.onVersionTap() },
-                modifier = Modifier.width(260.dp).fillMaxSize(),
+                modifier = Modifier
+                    .width(if (compactWindow) 210.dp else 260.dp)
+                    .fillMaxSize(),
             )
 
             Card(
@@ -299,26 +303,31 @@ private fun SettingsRail(
         modifier = modifier,
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(vertical = 12.dp, horizontal = 8.dp)) {
-            Text(
-                stringResource(R.string.settings_rail_sections_label),
-                color = TextMuted,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-
-            SettingsSection.entries.forEach { section ->
-                val isHidden = section == SettingsSection.SMART_HOME
-                if (isHidden && !smartHomeUnlocked) return@forEach
-                RailItem(
-                    section = section,
-                    isActive = section == selected,
-                    isHidden = isHidden,
-                    onClick = { onSelect(section) },
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    stringResource(R.string.settings_rail_sections_label),
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
+
+                SettingsSection.entries.forEach { section ->
+                    val isHidden = section == SettingsSection.SMART_HOME
+                    if (isHidden && !smartHomeUnlocked) return@forEach
+                    RailItem(
+                        section = section,
+                        isActive = section == selected,
+                        isHidden = isHidden,
+                        onClick = { onSelect(section) },
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
             HorizontalDivider(color = CardBorder)
             Row(
                 modifier = Modifier
