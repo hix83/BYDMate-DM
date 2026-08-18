@@ -50,7 +50,12 @@ interface TripDao {
     @Query("SELECT * FROM trips WHERE soc_start IS NULL AND source = 'energydata'")
     suspend fun getTripsWithoutSoc(): List<TripEntity>
 
-    @Query("SELECT * FROM trips WHERE cost IS NULL AND (kwh_consumed IS NOT NULL OR fuel_liters IS NOT NULL)")
+    @Query("""
+        SELECT * FROM trips
+        WHERE (kwh_consumed IS NOT NULL AND electricity_cost IS NULL)
+           OR (fuel_liters IS NOT NULL AND fuel_cost IS NULL)
+           OR (cost IS NULL AND (kwh_consumed IS NOT NULL OR fuel_liters IS NOT NULL))
+    """)
     suspend fun getTripsWithoutCost(): List<TripEntity>
 
     @Query("""

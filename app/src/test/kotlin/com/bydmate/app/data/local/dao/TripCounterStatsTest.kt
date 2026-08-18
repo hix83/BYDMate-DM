@@ -31,6 +31,34 @@ class TripCounterStatsTest {
     @After fun tearDown() = db.close()
 
     @Test
+    fun cost_recalculation_includes_fuel_added_after_electric_cost() = runBlocking {
+        val dao = db.tripDao()
+        dao.insert(
+            TripEntity(
+                startTs = 1_000L,
+                kwhConsumed = 2.0,
+                electricityCost = 10.0,
+                fuelLiters = 0.5,
+                fuelCost = null,
+                cost = 10.0,
+            )
+        )
+        dao.insert(
+            TripEntity(
+                startTs = 2_000L,
+                kwhConsumed = 3.0,
+                electricityCost = 15.0,
+                cost = 15.0,
+            )
+        )
+
+        val pending = dao.getTripsWithoutCost()
+
+        assertEquals(1, pending.size)
+        assertEquals(1_000L, pending.single().startTs)
+    }
+
+    @Test
     fun counter_stats_buckets_and_end_ts_filter() = runBlocking {
         val dao = db.tripDao()
         // Ended BEFORE `from` -> excluded entirely.

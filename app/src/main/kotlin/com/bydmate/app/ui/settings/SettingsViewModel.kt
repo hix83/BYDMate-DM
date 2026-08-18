@@ -34,6 +34,7 @@ import com.bydmate.app.data.repository.ChargeRepository
 import com.bydmate.app.data.repository.PlaceRepository
 import com.bydmate.app.data.repository.SettingsRepository
 import com.bydmate.app.data.repository.TripRepository
+import com.bydmate.app.domain.calculator.TripCostCalculator
 import com.bydmate.app.service.UpdateChecker
 import com.bydmate.app.util.CrashLog
 import com.bydmate.app.R
@@ -567,13 +568,16 @@ class SettingsViewModel @Inject constructor(
         val allTrips = tripRepository.getAllTrips().firstOrNull() ?: emptyList()
         var count = 0
         for (trip in allTrips) {
-            val electricityCost = trip.kwhConsumed?.let { it * tariff }
-            val fuelCost = trip.fuelLiters?.let { it * fuelPrice }
-            if (electricityCost == null && fuelCost == null) continue
+            val tripCost = TripCostCalculator.calculate(
+                kwhConsumed = trip.kwhConsumed,
+                fuelLiters = trip.fuelLiters,
+                electricityTariff = tariff,
+                fuelPricePerLiter = fuelPrice,
+            ) ?: continue
             tripRepository.updateTrip(trip.copy(
-                electricityCost = electricityCost,
-                fuelCost = fuelCost,
-                cost = (electricityCost ?: 0.0) + (fuelCost ?: 0.0)
+                electricityCost = tripCost.electricity,
+                fuelCost = tripCost.fuel,
+                cost = tripCost.total,
             ))
             count++
         }

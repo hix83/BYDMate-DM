@@ -13,6 +13,7 @@ import com.bydmate.app.data.remote.DiPlusTripRecord
 import com.bydmate.app.data.repository.LastSessionRepository
 import com.bydmate.app.data.repository.SettingsRepository
 import com.bydmate.app.data.repository.TripRepository
+import com.bydmate.app.domain.calculator.TripCostCalculator
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -269,23 +270,23 @@ class HistoryImporter @Inject constructor(
         )
     }
 
-    /**
-     * Calculate cost for trips that have kWh but no cost yet.
-     */
+    /** Calculate missing electricity/fuel components and their combined trip cost. */
     suspend fun calculateMissingCosts(tariff: Double) {
         try {
             val trips = tripDao.getTripsWithoutCost()
             var calculated = 0
             val fuelPrice = settingsRepository.getFuelPricePerLiter()
             for (trip in trips) {
-                val electricityCost = trip.kwhConsumed?.let { it * tariff }
-                val fuelCost = trip.fuelLiters?.let { it * fuelPrice }
-                val totalCost = (electricityCost ?: 0.0) + (fuelCost ?: 0.0)
-                if (electricityCost == null && fuelCost == null) continue
+                val tripCost = TripCostCalculator.calculate(
+                    kwhConsumed = trip.kwhConsumed,
+                    fuelLiters = trip.fuelLiters,
+                    electricityTariff = tariff,
+                    fuelPricePerLiter = fuelPrice,
+                ) ?: continue
                 tripRepository.updateTrip(trip.copy(
-                    electricityCost = electricityCost,
-                    fuelCost = fuelCost,
-                    cost = totalCost
+                    electricityCost = tripCost.electricity,
+                    fuelCost = tripCost.fuel,
+                    cost = tripCost.total,
                 ))
                 calculated++
             }
