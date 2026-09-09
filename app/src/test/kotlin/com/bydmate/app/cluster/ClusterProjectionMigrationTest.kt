@@ -7,6 +7,7 @@ import com.bydmate.app.data.vehicle.HelperBootstrap
 import com.bydmate.app.data.vehicle.HelperClient
 import io.mockk.coVerify
 import io.mockk.mockk
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -47,6 +48,26 @@ class ClusterProjectionMigrationTest {
             .putBoolean(ClusterProjectionManager.KEY_DIRECT_PROJECTION, false)
             .putInt(ClusterProjectionManager.KEY_DIRECT_DISPLAY_ID, 2)
             .commit()
+        assertFalse(ClusterProjectionManager.isDirectProjectionEnabled(context))
+    }
+
+    @Test
+    fun `legacy choices migrate to the three-mode transport preference`() {
+        prefs.edit().putBoolean(ClusterProjectionManager.KEY_DIRECT_PROJECTION, false).commit()
+        assertEquals(ProjectionTransport.FACTORY, ClusterProjectionManager.projectionTransport(context))
+        assertEquals(
+            ProjectionTransport.FACTORY.prefValue,
+            prefs.getString(ClusterProjectionManager.KEY_PROJECTION_TRANSPORT, null),
+        )
+    }
+
+    @Test
+    fun `explicit DM transport remains selected`() {
+        prefs.edit()
+            .putString(ClusterProjectionManager.KEY_PROJECTION_TRANSPORT, ProjectionTransport.DM_HIDDEN.prefValue)
+            .putBoolean(ClusterProjectionManager.KEY_DIRECT_PROJECTION, false)
+            .commit()
+        assertEquals(ProjectionTransport.DM_HIDDEN, ClusterProjectionManager.projectionTransport(context))
         assertFalse(ClusterProjectionManager.isDirectProjectionEnabled(context))
     }
 

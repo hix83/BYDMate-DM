@@ -105,8 +105,10 @@ object ClusterProjectionManager {
     private const val KEY_LAST_VD_ID = "last_vd_id"
     /** Wave P: power the cluster compositor automatically around projection (default ON). */
     const val KEY_AUTO_CONTAINER = "auto_container_enabled"
-    /** Projection transport: direct freeform launch (default) vs legacy VirtualDisplay pipeline. */
+    /** Legacy two-mode preference, retained for migration and downgrade compatibility. */
     const val KEY_DIRECT_PROJECTION = "direct_projection_enabled"
+    /** Three-mode projection transport. See [ProjectionTransport]. */
+    const val KEY_PROJECTION_TRANSPORT = "projection_transport"
     // Set while the daemon has powered the cluster compositor up for our projection; cleared only
     // after a CONFIRMED power-down. Survives process death: when the car shuts off mid-projection
     // the off sequence (18 -> pause -> 0) never runs, the compositor reboots in projection mode
@@ -479,7 +481,7 @@ object ClusterProjectionManager {
      */
     fun armSplitRebootHintIfNeeded(context: Context, splitEnabled: Boolean) {
         if (!splitEnabled) return
-        if (isDirectProjectionEnabled(context)) return
+        if (projectionTransport(context) == ProjectionTransport.DIRECT) return
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_SPLIT_FREEFORM_REBOOT_PENDING, true).apply()
     }
@@ -503,16 +505,22 @@ object ClusterProjectionManager {
      * app picker). VD also clears the direct-mode reboot hint — it is meaningless while the
      * direct path is disabled.
      */
-    fun setDirectProjectionEnabled(
-        context: Context, enabled: Boolean, helper: HelperClient, bootstrap: HelperBootstrap,
+    fun setProjectionTransport(
+        context: Context,
+        transport: ProjectionTransport,
+        helper: HelperClient,
+        bootstrap: HelperBootstrap,
     ) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val edit = prefs.edit().putBoolean(KEY_DIRECT_PROJECTION, enabled)
-        if (!enabled) edit.putBoolean(KEY_FREEFORM_REBOOT_PENDING, false)
+        val direct = transport == ProjectionTransport.DIRECT
+        val edit = prefs.edit()
+            .putString(KEY_PROJECTION_TRANSPORT, transport.prefValue)
+            .putBoolean(KEY_DIRECT_PROJECTION, direct)
+        if (!direct) edit.putBoolean(KEY_FREEFORM_REBOOT_PENDING, false)
         edit.apply()
         // Disarming the hint ends the reboot-and-retry cycle the verdict measures.
-        if (!enabled) SplitFreeformVerdict.clearSeenMarker(prefs)
+        if (!direct) SplitFreeformVerdict.clearSeenMarker(prefs)
         scope.launch {
             if (!bootstrap.ensureRunning()) {
                 Log.e(TAG, "helper daemon not running; freeform flag not updated"); return@launch
@@ -521,9 +529,19 @@ object ClusterProjectionManager {
             // re-reads the pref inside the lock, so a flip issued mid-attempt cannot be
             // overwritten by that attempt's stale value.
             val ok = alignFreeformFlag(appContext, helper)
-            Log.i(TAG, "projection transport flip: direct=$enabled, freeform flag write ok=$ok")
+            Log.i(TAG, "projection transport flip: transport=${transport.prefValue}, freeform flag write ok=$ok")
         }
     }
+
+    /** Compatibility wrapper for callers that still expose the former two-mode switch. */
+    fun setDirectProjectionEnabled(
+        context: Context, enabled: Boolean, helper: HelperClient, bootstrap: HelperBootstrap,
+    ) = setProjectionTransport(
+        context,
+        if (enabled) ProjectionTransport.DIRECT else ProjectionTransport.FACTORY,
+        helper,
+        bootstrap,
+    )
 
     /**
      * Linearized freeform-flag writer: takes the same [mutex] that serializes project(), and
@@ -699,11 +717,11 @@ object ClusterProjectionManager {
      * the direct pipeline). KEY_COMPOSITOR_POWERED is deliberately NOT consulted: it is written
      * on both transports (auto-container block in project()), so consulting it would falsely
      * migrate a passive user who ever projected via the factory/VD path. Prefs-only and
-     * idempotent: once KEY_DIRECT_PROJECTION exists (explicitly chosen or migrated) this
+     * idempotent: once either transport preference exists (explicitly chosen or migrated) this
      * is a no-op. No daemon traffic.
      */
     internal fun migrateDirectPrefIfNeeded(prefs: SharedPreferences) {
-        if (prefs.contains(KEY_DIRECT_PROJECTION)) return
+        if (prefs.contains(KEY_PROJECTION_TRANSPORT) || prefs.contains(KEY_DIRECT_PROJECTION)) return
         // KEY_COMPOSITOR_POWERED is deliberately NOT consulted: it is written on both
         // transports, so it would falsely migrate a passive user who projected via VD.
         val projectedDirect = prefs.contains(KEY_FREEFORM_REBOOT_PENDING) ||
@@ -711,8 +729,24 @@ object ClusterProjectionManager {
         if (projectedDirect) prefs.edit().putBoolean(KEY_DIRECT_PROJECTION, true).apply()
     }
 
-    /** Transport pref as consumers must see it: runs the one-time migration first. */
-    fun isDirectProjectionEnabled(context: Context): Boolean = readDirectEnabled(context)
+    /** Transport pref as consumers must see it: runs legacy migrations first. */
+    fun projectionTransport(context: Context): ProjectionTransport {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        migrateDirectPrefIfNeeded(prefs)
+        if (!prefs.contains(KEY_PROJECTION_TRANSPORT) && prefs.contains(KEY_DIRECT_PROJECTION)) {
+            val migrated = if (prefs.getBoolean(KEY_DIRECT_PROJECTION, false)) {
+                ProjectionTransport.DIRECT
+            } else {
+                ProjectionTransport.FACTORY
+            }
+            prefs.edit().putString(KEY_PROJECTION_TRANSPORT, migrated.prefValue).apply()
+            return migrated
+        }
+        return ProjectionTransport.fromPref(prefs.getString(KEY_PROJECTION_TRANSPORT, null))
+    }
+
+    fun isDirectProjectionEnabled(context: Context): Boolean =
+        projectionTransport(context) == ProjectionTransport.DIRECT
 
     /** True when the user ever made an explicit transport choice (UI chip or migration).
      *  The system freeform flag is managed ONLY for these users; a passive user's flag is
@@ -720,16 +754,12 @@ object ClusterProjectionManager {
     private fun hasTransportChoice(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         migrateDirectPrefIfNeeded(prefs)
-        return prefs.contains(KEY_DIRECT_PROJECTION)
+        return prefs.contains(KEY_PROJECTION_TRANSPORT) || prefs.contains(KEY_DIRECT_PROJECTION)
     }
 
     /** Projection transport chosen in settings: true = direct freeform, false = VD (default). */
     private fun readDirectEnabled(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        migrateDirectPrefIfNeeded(prefs)
-        // Factory (VD) is the default: a fresh install must not require the system
-        // freeform flag. The extended transport is opt-in via the settings chip.
-        return prefs.getBoolean(KEY_DIRECT_PROJECTION, false)
+        return projectionTransport(context) == ProjectionTransport.DIRECT
     }
 
     /** Package to project — user-selectable in settings, defaults to Yandex Navi. */
@@ -1017,11 +1047,18 @@ object ClusterProjectionManager {
         // exits below, so a later write never runs there - exactly the population the
         // factory restore exists for. Direct mode keeps its byte-identical call order: its
         // write stays in the direct-first block below.
-        val direct = readDirectEnabled(context)
+        val transport = projectionTransport(context)
+        val direct = transport == ProjectionTransport.DIRECT
         if (!direct && hasTransportChoice(context)) runCatching {
             helper.putGlobalSetting(
                 "enable_freeform_support",
                 freeformFlagValue(direct, splitPreferences.isFeatureEnabled()))
+        }
+        // Song L DM-i / hidden-display mode is explicit: skip the standard DisplayManager
+        // route entirely instead of waiting for a lookup that is known to fail on this firmware.
+        if (transport == ProjectionTransport.DM_HIDDEN) {
+            log("transport=dm_hidden display=$DEFAULT_CLUSTER_DISPLAY_ID (forced)")
+            return projectHiddenClusterDisplay(context, helper)
         }
         // #85/#62: resolve the display BEFORE any compositor ИПЦ write. Song family /
         // DiLink 3-4 expose no projection display; powering the compositor up there painted

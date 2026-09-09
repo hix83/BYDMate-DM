@@ -1883,7 +1883,7 @@ class SettingsViewModel @Inject constructor(
                 val diag = cpm.diag()
                 appendLine("mode: ${diag.mode} attempt_in_progress=${diag.attemptInProgress} " +
                     "last_failure=${diag.lastFailure ?: "(none)"}")
-                appendLine("transport: ${if (cpm.isDirectProjectionEnabled(appContext)) "direct" else "vd"} " +
+                appendLine("transport: ${cpm.projectionTransport(appContext).prefValue} " +
                     "auto_container=${clusterPrefs.getBoolean(cpm.KEY_AUTO_CONTAINER, true)} " +
                     "freeform_reboot_pending=${clusterPrefs.getBoolean(cpm.KEY_FREEFORM_REBOOT_PENDING, false)}")
                 appendLine("projected_pkg: ${diag.projectedPackage ?: "(none)"} " +

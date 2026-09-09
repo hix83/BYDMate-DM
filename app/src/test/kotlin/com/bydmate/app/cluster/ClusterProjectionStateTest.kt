@@ -7,6 +7,14 @@ import org.junit.Test
 
 class ClusterProjectionStateTest {
 
+    @Test fun `projection transport preference parses all modes and defaults to factory`() {
+        assertEquals(ProjectionTransport.FACTORY, ProjectionTransport.fromPref(null))
+        assertEquals(ProjectionTransport.FACTORY, ProjectionTransport.fromPref("factory"))
+        assertEquals(ProjectionTransport.DIRECT, ProjectionTransport.fromPref("direct"))
+        assertEquals(ProjectionTransport.DM_HIDDEN, ProjectionTransport.fromPref("dm_hidden"))
+        assertEquals(ProjectionTransport.FACTORY, ProjectionTransport.fromPref("unknown"))
+    }
+
     @Test fun `fullscreen geometry fills the whole cluster`() {
         assertEquals(
             ClusterGeometry(width = 1280, height = 480, xOffset = 0, yOffset = 0),

@@ -31,7 +31,8 @@
     <string name="settings_projection_mode_title">Projection mode</string>
     <string name="settings_projection_mode_direct">Extended</string>
     <string name="settings_projection_mode_vd">Factory</string>
-    <string name="settings_projection_mode_help" formatted="false">Factory: works like versions before 3.6, no system settings of the car are changed, the adjustment sliders work more precisely. Downside: the voice agent and HUD cannot see the navigator screen, guidance comes from the notification only. Extended: the navigator runs right on the cluster, the agent and HUD can see it. Enables the system freeform window mode, a one-time DiLink reboot is required. To restore factory state: switch back to Factory, the system setting returns to its factory value and fully applies after a reboot. The mode itself applies on the next projection start.</string>
+    <string name="settings_projection_mode_dm">DM</string>
+    <string name="settings_projection_mode_help" formatted="false">Factory uses the standard VirtualDisplay path. Extended runs the navigator directly on the cluster and requires system freeform mode plus a one-time DiLink reboot. DM immediately uses hidden display 2 for Song L DM-i and skips the known-broken standard display lookup. The selected mode applies on the next projection start.</string>
     <string name="projection_extended_confirm_title">Enable extended mode?</string>
     <string name="projection_extended_confirm_body">Extended mode changes a DiLink system window setting so the navigator runs right on the instrument cluster and the voice agent and HUD can see it. A one-time DiLink reboot will be required. To restore the factory state, switch back to Factory and reboot DiLink.</string>
     <string name="projection_extended_confirm_enable">Enable</string>

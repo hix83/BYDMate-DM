@@ -34,6 +34,7 @@
     <string name="settings_projection_mode_title">Tryb projekcji</string>
     <string name="settings_projection_mode_direct">Rozszerzony</string>
     <string name="settings_projection_mode_vd">Fabryczny</string>
+    <string name="settings_projection_mode_dm">DM</string>
     <string name="settings_projection_mode_help" formatted="false">Fabryczny: jak w wersjach do 3.6, ustawienia systemowe auta nie zmieniają się, dokładniej działają suwaki dopasowania. Minus: asystent głosowy i HUD nie widzą ekranu nawigacji, wskazówki tylko z powiadomienia. Rozszerzony: nawigacja działa bezpośrednio na wskaźnikach, widzą ją agent i HUD. Włącza systemowy tryb okienkowy, wymaga jednorazowego restartu DiLink. Powrót do fabryki: przełącz na Fabryczny, ustawienie systemowe wróci do wartości fabrycznej i w pełni zadziała po restarcie. Tryb jest stosowany przy następnym wyświetleniu na wskaźnikach.</string>
     <string name="projection_extended_confirm_title">Włączyć tryb rozszerzony?</string>
     <string name="projection_extended_confirm_body">Tryb rozszerzony zmienia systemowe ustawienie trybu okienkowego DiLink, żeby nawigacja działała bezpośrednio na wskaźnikach i widzieli ją asystent głosowy oraz HUD. Potrzebny będzie jednorazowy restart DiLink. Aby przywrócić stan fabryczny, przełącz z powrotem na Fabryczny i zrestartuj DiLink.</string>

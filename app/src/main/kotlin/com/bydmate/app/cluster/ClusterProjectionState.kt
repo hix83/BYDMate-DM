@@ -6,6 +6,18 @@ const val NAVI_PACKAGE = "ru.yandex.yandexnavi"
 /** Cluster projection state (OFF / FULLSCREEN). */
 enum class ClusterMode { OFF, FULLSCREEN }
 
+/** User-selectable transport used to place the target app on the instrument cluster. */
+enum class ProjectionTransport(val prefValue: String) {
+    FACTORY("factory"),
+    DIRECT("direct"),
+    DM_HIDDEN("dm_hidden");
+
+    companion object {
+        fun fromPref(value: String?): ProjectionTransport =
+            entries.firstOrNull { it.prefValue == value } ?: FACTORY
+    }
+}
+
 /** Where Navi renders on the cluster overlay: the window rectangle on the panel. */
 data class ClusterGeometry(val width: Int, val height: Int, val xOffset: Int, val yOffset: Int)
 

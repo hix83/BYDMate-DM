@@ -9,6 +9,7 @@ import com.bydmate.app.camera.BlindSpotPositionOverlay
 import com.bydmate.app.camera.BlindSpotPreferences
 import com.bydmate.app.cluster.ClusterEntryPoint
 import com.bydmate.app.cluster.ClusterProjectionManager
+import com.bydmate.app.cluster.ProjectionTransport
 import com.bydmate.app.cluster.CENTER_OFFSET_PCT
 import com.bydmate.app.cluster.MAX_OFFSET_PCT
 import com.bydmate.app.cluster.MAX_PROJECTION_PCT
@@ -1348,8 +1349,8 @@ private fun DisplaySection() {
     val freeformUnsupported = remember {
         SplitFreeformVerdict(prefs, bootCount = { -1 }).unsupported()
     }
-    var directProjection by remember {
-        mutableStateOf(ClusterProjectionManager.isDirectProjectionEnabled(context))
+    var projectionTransport by remember {
+        mutableStateOf(ClusterProjectionManager.projectionTransport(context))
     }
     var extendedConfirmOpen by remember { mutableStateOf(false) }
     var modeHelpOpen by remember { mutableStateOf(false) }
@@ -1407,28 +1408,36 @@ private fun DisplaySection() {
             },
         )
         SettingDivider()
-        // Transport selector: direct freeform (agent/HUD can see the navigator) vs the
-        // pre-3.6 VirtualDisplay pipeline. VD also returns the system freeform flag to its
-        // factory value — the fix for third-party projection apps broken by a stale flag.
+        // Three explicit transports. DM bypasses the standard display lookup because Song L
+        // firmware hides display 2 from the app process.
         SettingChipRow(
             title = stringResource(R.string.settings_projection_mode_title),
             options = listOf(
                 stringResource(R.string.settings_projection_mode_vd),
                 stringResource(R.string.settings_projection_mode_direct),
+                stringResource(R.string.settings_projection_mode_dm),
             ),
-            selectedIndex = if (directProjection) 1 else 0,
+            selectedIndex = when (projectionTransport) {
+                ProjectionTransport.FACTORY -> 0
+                ProjectionTransport.DIRECT -> 1
+                ProjectionTransport.DM_HIDDEN -> 2
+            },
             onSelect = { index ->
-                val direct = index == 1
-                if (direct != directProjection) {
-                    if (direct) {
+                val selected = when (index) {
+                    1 -> ProjectionTransport.DIRECT
+                    2 -> ProjectionTransport.DM_HIDDEN
+                    else -> ProjectionTransport.FACTORY
+                }
+                if (selected != projectionTransport) {
+                    if (selected == ProjectionTransport.DIRECT) {
                         // Extended transport changes a system window setting - informed
                         // consent first: what changes, why, and how to restore factory.
                         extendedConfirmOpen = true
                     } else {
-                        directProjection = false
+                        projectionTransport = selected
                         rebootPending = false
-                        ClusterProjectionManager.setDirectProjectionEnabled(
-                            context, false, entryPoint.helperClient(), entryPoint.helperBootstrap())
+                        ClusterProjectionManager.setProjectionTransport(
+                            context, selected, entryPoint.helperClient(), entryPoint.helperBootstrap())
                     }
                 }
             },
@@ -1456,9 +1465,10 @@ private fun DisplaySection() {
                 confirmButton = {
                     TextButton(onClick = {
                         extendedConfirmOpen = false
-                        directProjection = true
-                        ClusterProjectionManager.setDirectProjectionEnabled(
-                            context, true, entryPoint.helperClient(), entryPoint.helperBootstrap())
+                        projectionTransport = ProjectionTransport.DIRECT
+                        ClusterProjectionManager.setProjectionTransport(
+                            context, ProjectionTransport.DIRECT,
+                            entryPoint.helperClient(), entryPoint.helperBootstrap())
                     }) { Text(stringResource(R.string.projection_extended_confirm_enable), color = AccentGreen) }
                 },
                 dismissButton = {
@@ -1470,7 +1480,7 @@ private fun DisplaySection() {
         }
         // Once the firmware is proven to ignore the freeform flag (#139) the reboot advice is
         // wrong — say so instead.
-        if (directProjection && (freeformUnsupported || rebootPending)) {
+        if (projectionTransport == ProjectionTransport.DIRECT && (freeformUnsupported || rebootPending)) {
             SettingHint(text = stringResource(
                 if (freeformUnsupported) R.string.cluster_direct_unsupported_hint
                 else R.string.settings_cluster_direct_reboot_hint
@@ -1560,7 +1570,7 @@ private fun DisplaySection() {
         // need a density override on the live cluster display, which kills Qt apps like 2GIS, so
         // the slider is inert there. Kept enabled and visible - the value still applies the moment
         // the user switches back to Factory.
-        if (directProjection) {
+        if (projectionTransport == ProjectionTransport.DIRECT) {
             SettingHint(text = stringResource(R.string.settings_display_scale_direct_hint))
         }
     }

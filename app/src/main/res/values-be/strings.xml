@@ -34,6 +34,7 @@
     <string name="settings_projection_mode_title">Рэжым праекцыі</string>
     <string name="settings_projection_mode_direct">Пашыраны</string>
     <string name="settings_projection_mode_vd">Заводскі</string>
+    <string name="settings_projection_mode_dm">DM</string>
     <string name="settings_projection_mode_help" formatted="false">Заводскі: як у версіях да 3.6, сістэмныя налады машыны не мяняюцца, дакладней працуюць паўзункі падладкі. Мінус: галасавы агент і HUD не бачаць экран навігатара, падказкі толькі з апавяшчэння. Пашыраны: навігатар працуе проста на прыборцы, яго бачаць агент і HUD. Уключае сістэмны аконны рэжым, патрэбна аднаразовая перазагрузка DiLink. Вяртанне да завода: пераключыце на Заводскі, сістэмная налада вернецца да заводскага значэння і цалкам ужыецца пасля перазагрузкі. Рэжым ужываецца пры наступным вывадзе на прыборку.</string>
     <string name="projection_extended_confirm_title">Уключыць пашыраны рэжым?</string>
     <string name="projection_extended_confirm_body">Пашыраны рэжым мяняе сістэмную наладу аконнага рэжыму DiLink, каб навігатар працаваў проста на прыборцы і яго бачылі галасавы агент і HUD. Спатрэбіцца аднаразовая перазагрузка DiLink. Каб вярнуць заводскі стан, пераключыце назад на Заводскі і перазагрузіце DiLink.</string>
