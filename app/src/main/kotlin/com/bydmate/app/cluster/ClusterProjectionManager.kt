@@ -218,7 +218,6 @@ object ClusterProjectionManager {
         val candidates = listOfNotNull(
             activity.window.decorView.display,
             activity.windowManager.defaultDisplay,
-            activity.display,
         ).distinctBy { it.displayId }
         val display = candidates.firstOrNull { it.displayId == DEFAULT_CLUSTER_DISPLAY_ID }
         if (display == null) {

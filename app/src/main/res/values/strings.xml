@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">BYDMate</string>
     <string name="cluster_a11y_description">Перехват кнопок руля для проекции навигации на приборную панель. Включается вручную, работает только при включённой функции.</string>
     <string name="settings_language_title">Язык</string>
@@ -13,7 +13,7 @@
     <string name="settings_section_trips_title">Поездки</string>
     <string name="settings_section_integrations_title">Интеграции</string>
     <string name="settings_section_widget_title">Виджет</string>
-    <string name="settings_section_parking_camera_title">Камера парковки</string>
+    <string name="settings_section_parking_camera_title" tools:ignore="MissingTranslation">Камера парковки</string>
     <string name="settings_section_display_title">Дисплей</string>
     <!-- Settings: Display section (cluster projection) -->
     <string name="settings_display_state_on">Включено</string>
@@ -143,23 +143,23 @@
     <string name="settings_abrp_location_label">Отправлять координаты в ABRP</string>
     <string name="settings_abrp_location_description">Добавляет GPS-позицию и курс машины в телеметрию. По умолчанию выключено: ABRP на ДиЛинке читает координаты сам. Включите, если стрелка машины в ABRP отстаёт от реального положения.</string>
     <string name="settings_abrp_save_button">Сохранить ABRP</string>
-    <string name="settings_parking_camera_section_header">Камера парковки</string>
-    <string name="settings_parking_camera_name_label">Название камеры</string>
-    <string name="settings_parking_camera_url_label">URL камеры</string>
-    <string name="settings_parking_camera_description">Первая камера используется виджетом и сценарием «Камера парковки». У каждой камеры можно добавить до двух шлагбаумов, которые открываются звонком.</string>
-    <string name="settings_parking_camera_primary_badge">Основная камера</string>
-    <string name="settings_parking_camera_item_title">Камера %1$d</string>
-    <string name="settings_parking_camera_default_name">Парковка</string>
-    <string name="settings_parking_camera_add_button">Добавить камеру</string>
-    <string name="settings_parking_camera_save_button">Сохранить камеру</string>
-    <string name="settings_parking_camera_url_error">Ошибка: укажите адрес камеры</string>
-    <string name="settings_parking_gates_header">Шлагбаумы</string>
-    <string name="settings_parking_gate_name_label">Название шлагбаума</string>
-    <string name="settings_parking_gate_phone_label">Номер телефона</string>
-    <string name="settings_parking_gate_default_name">Шлагбаум %1$d</string>
-    <string name="settings_parking_gate_add_button">Добавить шлагбаум</string>
-    <string name="settings_delete_button">Удалить</string>
-    <string name="settings_ai_section_header">AI Инсайты</string>
+    <string name="settings_parking_camera_section_header" tools:ignore="MissingTranslation">Камера парковки</string>
+    <string name="settings_parking_camera_name_label" tools:ignore="MissingTranslation">Название камеры</string>
+    <string name="settings_parking_camera_url_label" tools:ignore="MissingTranslation">URL камеры</string>
+    <string name="settings_parking_camera_description" tools:ignore="MissingTranslation">Первая камера используется виджетом и сценарием «Камера парковки». У каждой камеры можно добавить до двух шлагбаумов, которые открываются звонком.</string>
+    <string name="settings_parking_camera_primary_badge" tools:ignore="MissingTranslation">Основная камера</string>
+    <string name="settings_parking_camera_item_title" tools:ignore="MissingTranslation">Камера %1$d</string>
+    <string name="settings_parking_camera_default_name" tools:ignore="MissingTranslation">Парковка</string>
+    <string name="settings_parking_camera_add_button" tools:ignore="MissingTranslation">Добавить камеру</string>
+    <string name="settings_parking_camera_save_button" tools:ignore="MissingTranslation">Сохранить камеру</string>
+    <string name="settings_parking_camera_url_error" tools:ignore="MissingTranslation">Ошибка: укажите адрес камеры</string>
+    <string name="settings_parking_gates_header" tools:ignore="MissingTranslation">Шлагбаумы</string>
+    <string name="settings_parking_gate_name_label" tools:ignore="MissingTranslation">Название шлагбаума</string>
+    <string name="settings_parking_gate_phone_label" tools:ignore="MissingTranslation">Номер телефона</string>
+    <string name="settings_parking_gate_default_name" tools:ignore="MissingTranslation">Шлагбаум %1$d</string>
+    <string name="settings_parking_gate_add_button" tools:ignore="MissingTranslation">Добавить шлагбаум</string>
+    <string name="settings_delete_button" tools:ignore="MissingTranslation">Удалить</string>
+    <string name="settings_ai_section_header" tools:ignore="MissingTranslation">AI Инсайты</string>
     <string name="settings_webhook_section_header">Вебхук - телеметрия</string>
     <string name="settings_webhook_label">Живые данные -> свой сервер</string>
     <string name="settings_webhook_description">Тот же JSON, что уходит в ABRP (SOC, мощность, температуры, одометр, давление шин, зарядка), отправляется POST-запросом на ваш URL: раз в секунду в движении, раз в 8 секунд на зарядке, раз в 30 секунд на стоянке. Координаты по умолчанию не передаются.</string>
@@ -208,13 +208,13 @@
     <string name="settings_widget_tap_section_header">Тап по виджету</string>
     <string name="settings_widget_left_tap_zoning_label">Зонирование тапов</string>
     <string name="settings_widget_left_tap_zoning_description">Левая 1/3 - открывает выбранное приложение; остальное - BYDMate.</string>
-    <string name="settings_widget_left_tap_action_label">Действие левой 1/3</string>
-    <string name="settings_widget_left_tap_action_app">Приложение</string>
-    <string name="settings_widget_left_tap_action_camera">Камера</string>
+    <string name="settings_widget_left_tap_action_label" tools:ignore="MissingTranslation">Действие левой 1/3</string>
+    <string name="settings_widget_left_tap_action_app" tools:ignore="MissingTranslation">Приложение</string>
+    <string name="settings_widget_left_tap_action_camera" tools:ignore="MissingTranslation">Камера</string>
     <string name="settings_widget_left_tap_label">Приложение для левого тапа</string>
     <string name="settings_widget_left_tap_description">По умолчанию Яндекс.Навигатор. Если приложение удалено, тап не сработает.</string>
-    <string name="settings_widget_left_tap_camera_label">Камера парковки</string>
-    <string name="settings_widget_left_tap_camera_description">Левая 1/3 виджета откроет основную парковочную камеру.</string>
+    <string name="settings_widget_left_tap_camera_label" tools:ignore="MissingTranslation">Камера парковки</string>
+    <string name="settings_widget_left_tap_camera_description" tools:ignore="MissingTranslation">Левая 1/3 виджета откроет основную парковочную камеру.</string>
     <string name="settings_widget_buttons_label">Кнопки на виджете</string>
     <string name="settings_widget_buttons_description">Один тап по виджету выдвигает 4 кнопки, двойной тап открывает BYDMate. Кнопка запускает правило с триггером «Нажатие кнопки».</string>
 
@@ -469,9 +469,9 @@
     <string name="automation_action_call">Звонок</string>
     <string name="automation_action_navigate">Маршрут в Я.Навигаторе</string>
     <string name="automation_action_url">Открыть URL</string>
-    <string name="automation_action_camera_overlay">Камера парковки</string>
+    <string name="automation_action_camera_overlay" tools:ignore="MissingTranslation">Камера парковки</string>
     <string name="automation_action_delay">Пауза</string>
-    <string name="automation_camera_overlay_summary">Открыть камеру из настроек поверх экрана</string>
+    <string name="automation_camera_overlay_summary" tools:ignore="MissingTranslation">Открыть камеру из настроек поверх экрана</string>
     <string name="automation_action_media_volume">Громкость медиа</string>
     <string name="automation_action_media_volume_label">Громкость</string>
     <string name="automation_action_sentry">Охранный режим</string>
@@ -504,9 +504,9 @@
     <string name="automation_tap_to_set_url">Нажмите, чтобы задать URL…</string>
 
     <!-- Parking camera overlay -->
-    <string name="camera_overlay_title">Камера парковки</string>
-    <string name="camera_overlay_refresh">Обновить</string>
-    <string name="camera_overlay_close">Закрыть</string>
+    <string name="camera_overlay_title" tools:ignore="MissingTranslation">Камера парковки</string>
+    <string name="camera_overlay_refresh" tools:ignore="MissingTranslation">Обновить</string>
+    <string name="camera_overlay_close" tools:ignore="MissingTranslation">Закрыть</string>
 
     <!-- Notification edit dialog -->
     <string name="automation_notification_title_label">Заголовок</string>
@@ -625,8 +625,8 @@
     <string name="widget_km_per_percent">%1$.1f</string>
     <!-- Voltage value with unit: %.1f V -->
     <string name="widget_voltage_value">%1$.1f В</string>
-    <string name="widget_camera_button_a11y">Открыть камеру парковки</string>
-    <string name="widget_camera_open_failed">Не удалось открыть камеру. Проверьте разрешение поверх окон.</string>
+    <string name="widget_camera_button_a11y" tools:ignore="MissingTranslation">Открыть камеру парковки</string>
+    <string name="widget_camera_open_failed" tools:ignore="MissingTranslation">Не удалось открыть камеру. Проверьте разрешение поверх окон.</string>
     <!-- Long-press toast -->
     <string name="widget_toast_hidden">Виджет скрыт. Откройте BYDMate - вернётся.</string>
     <string name="widget_button_no_rules">Нет правил для кнопки %1$d</string>
@@ -641,7 +641,7 @@
     <string name="dashboard_diplus_offline">DiPlus не отвечает</string>
     <string name="dashboard_status_online">Online</string>
     <string name="dashboard_status_offline">Offline</string>
-    <string name="dashboard_update_available_status">Доступна v%1$s</string>
+    <string name="dashboard_update_available_status" tools:ignore="MissingTranslation">Доступна v%1$s</string>
 
     <!-- Left column - live stats -->
     <string name="dashboard_unit_km">км</string>
