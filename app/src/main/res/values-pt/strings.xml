@@ -12,12 +12,22 @@
     <string name="settings_section_voice_agent">Agente de voz</string>
     <!-- Settings: Display section (cluster projection) -->
     <string name="cluster_a11y_description">Intercepta os botões do volante para projetar a navegação no painel de instrumentos. Ativado manualmente, funciona apenas quando o recurso está ligado.</string>
+    <string name="settings_display_state_on">Ativado</string>
+    <string name="settings_display_state_off">Desativado</string>
+    <string name="settings_display_card_mirror_title">Projeção no painel</string>
+    <string name="settings_display_card_mirror_sub">Navegador pelo botão do volante. %1$s</string>
+    <string name="settings_display_card_mirror_sub_app">Navegador pelo botão do volante. %1$s, %2$s</string>
+    <string name="settings_display_card_hud_title">Projeção no para-brisa (HUD)</string>
+    <string name="settings_display_card_hud_sub">Orientações do navegador no HUD de fábrica. %1$s</string>
+    <string name="settings_display_card_blindspot_sub">Câmera pela seta. %1$s</string>
+    <string name="settings_display_window_subhead">Janela no painel</string>
     <string name="settings_display_mirror_header">Projeção no painel de instrumentos</string>
     <string name="settings_display_mirror_title">Projeção no painel via botão do volante</string>
     <string name="settings_display_mirror_desc">Um toque curto no botão escolhido do volante move o aplicativo selecionado para o painel de instrumentos e vice-versa.</string>
     <string name="settings_cluster_auto_container_title">Mostrar no painel imediatamente</string>
-    <string name="settings_cluster_auto_container_desc">Ativar o modo de projeção do painel automaticamente</string>
+    <string name="settings_cluster_auto_container_desc">O app alterna o painel para o modo de projeção e de volta sozinho (navegador e câmeras de ponto cego). Desative se depois disso o ADAS ou o widget de fábrica sumir do painel e não voltar sozinho: então alterne o modo do painel manualmente, a imagem aparece no minimapa</string>
     <string name="settings_cluster_direct_reboot_hint">Para o agente de voz ver o navegador no painel, reinicie o DiLink uma vez: mantenha pressionado o botão de volume. Apenas desligar o carro não é suficiente. Até o reinício a projeção funciona, mas o agente não vê a rota.</string>
+    <string name="cluster_direct_unsupported_hint">A saída direta não está disponível no firmware deste carro, um modo compatível é usado</string>
     <string name="settings_projection_mode_title">Modo de projeção</string>
     <string name="settings_projection_mode_direct">Estendido</string>
     <string name="settings_projection_mode_vd">De fábrica</string>
@@ -38,6 +48,7 @@
     <string name="settings_display_offset_y_desc">Posição da janela: 0 - topo, 50 - centro, 100 - parte inferior</string>
     <string name="settings_display_scale">Escala</string>
     <string name="settings_display_scale_desc">Tamanho da interface: valor menor - elementos menores e mais mapa na janela</string>
+    <string name="settings_display_scale_direct_hint">A escala funciona apenas no modo de projeção «De fábrica». No modo «Estendido» o aplicativo é sempre exibido em tamanho nativo.</string>
     <!-- Steering-wheel button names (cluster trigger picker) -->
     <string name="steering_button_right_star">Estrela direita</string>
     <string name="steering_button_left_star">Estrela esquerda</string>
@@ -58,6 +69,15 @@
     <string name="learn_button_save">Salvar</string>
     <string name="learn_button_again">Novamente</string>
     <string name="learn_button_cancel">Cancelar</string>
+    <!-- Volume knob on the steering wheel: play/pause instead of audio-source switch -->
+    <string name="settings_knob_play_pause_title">Botão giratório de volume no volante</string>
+    <string name="settings_knob_play_pause_desc">Pressionar pausa e retoma a reprodução em vez de trocar a fonte de áudio. Necessário após a atualização de firmware em que o toque passou a mudar a fonte.</string>
+    <!-- Car system section: BYD head unit settings, not app settings -->
+    <string name="settings_car_system_header">Sistema do carro</string>
+    <string name="settings_car_language_title">Idioma da interface do carro</string>
+    <string name="settings_car_language_desc">Apenas para o firmware UI7. O botão abre a caixa de diálogo de fábrica oculta da BYD com a lista completa de idiomas. Para ativar o russo: escolha \"Русский язык\" e depois OK. Para voltar: o mesmo botão, \"English\", OK. Atenção: com o russo, o estacionamento automático deixa de funcionar para alguns proprietários. Se usa o estacionamento automático, mantenha English.</string>
+    <string name="settings_car_language_button">Abrir seleção de idioma</string>
+    <string name="settings_car_language_unavailable">A caixa de diálogo de idioma não está disponível neste firmware</string>
     <string name="settings_section_places_title">Locais</string>
     <string name="settings_section_application_title">Aplicativo</string>
     <string name="settings_smart_home_section_title">Casa inteligente</string>
@@ -74,6 +94,23 @@
     <string name="settings_consumption_section_header">Limites de consumo</string>
     <string name="settings_consumption_good_label">Bom &lt; (kWh/100km)</string>
     <string name="settings_consumption_bad_label">Ruim &gt; (kWh/100km)</string>
+
+    <!-- Settings: Range calculation method (Auto = learned history, Manual = user table) -->
+    <string name="settings_range_calc_section_header">Método de cálculo da autonomia</string>
+    <string name="settings_range_calc_method_label">Método de cálculo</string>
+    <string name="settings_range_calc_auto">Automático</string>
+    <string name="settings_range_calc_manual">Manual</string>
+    <string name="settings_range_calc_method_desc">\"Automático\" usa o histórico de viagens e o consumo atual. \"Manual\" usa a sua própria tabela de consumo em função da temperatura da bateria.</string>
+    <string name="settings_range_calc_edit_table_button">Tabela de consumo</string>
+    <string name="settings_range_calc_edit_table_desc">5 pontos: temperatura da bateria → consumo (e, opcionalmente, a autonomia com 100% de carga)</string>
+    <string name="range_table_dialog_title">Tabela de consumo por temperatura da bateria</string>
+    <string name="range_table_dialog_note1">O consumo (kWh/100km) é obrigatório; a autonomia com 100% de carga é opcional, mas deve ser preenchida em todas as linhas ou em nenhuma.</string>
+    <string name="range_table_dialog_col_temp">°C</string>
+    <string name="range_table_dialog_col_consumption">Consumo, kWh/100 km</string>
+    <string name="range_table_dialog_col_range">Autonomia, km</string>
+    <string name="range_table_dialog_reset">Restaurar padrão</string>
+    <string name="range_table_dialog_cancel">Cancelar</string>
+    <string name="range_table_dialog_save">Salvar</string>
 
     <!-- Settings: Trips section -->
     <string name="settings_trips_datasource_header">Fonte de dados de viagens</string>
@@ -96,6 +133,16 @@
     <string name="settings_abrp_location_label">Enviar coordenadas ao ABRP</string>
     <string name="settings_abrp_location_description">Adiciona a posição GPS e o rumo do carro à telemetria. Desligado por padrão: o ABRP no DiLink lê a localização por conta própria. Ative se a seta do carro no ABRP ficar atrás da posição real.</string>
     <string name="settings_abrp_save_button">Salvar ABRP</string>
+    <string name="settings_webhook_section_header">Webhook - telemetria</string>
+    <string name="settings_webhook_label">Dados ao vivo -&gt; seu próprio servidor</string>
+    <string name="settings_webhook_description">O mesmo JSON que vai para o ABRP (SoC, potência, temperaturas, hodômetro, pressão dos pneus, carregamento) é enviado por requisição POST para a sua URL: uma vez por segundo em movimento, a cada 8 segundos carregando e a cada 30 segundos estacionado. As coordenadas não são enviadas por padrão.</string>
+    <string name="settings_webhook_url_label">URL (https://)</string>
+    <string name="settings_webhook_secret_label">Segredo (cabeçalho Authorization: Bearer), opcional</string>
+    <string name="settings_webhook_location_label">Enviar coordenadas ao webhook</string>
+    <string name="settings_webhook_location_description">Adiciona a posição GPS e o rumo do carro ao JSON.</string>
+    <string name="settings_webhook_save_button">Salvar webhook</string>
+    <string name="settings_webhook_saved">Webhook salvo</string>
+    <string name="settings_webhook_invalid_url">URL inválida</string>
     <string name="settings_openrouter_api_key_label">Chave de API do OpenRouter</string>
     <string name="settings_openrouter_model_selected">Modelo: %1$s</string>
     <string name="settings_openrouter_model_pick">Escolher modelo</string>
@@ -107,6 +154,10 @@
     <string name="settings_widget_hints">- Toque longo no widget - oculta até o BYDMate ser aberto na próxima vez.\n- Arraste para a lixeira na parte inferior - desliga completamente.\n- Toque normal - abre o BYDMate.</string>
     <string name="settings_widget_hide_youtube_label">Ocultar sobre o YouTube</string>
     <string name="settings_widget_hide_youtube_description">O painel de botões fica oculto enquanto o YouTube está na tela</string>
+    <string name="settings_widget_hide_apps_label">Ocultar em aplicativos</string>
+    <string name="settings_widget_hide_apps_description">O painel de botões fica oculto enquanto o app escolhido está na tela</string>
+    <string name="settings_widget_hide_apps_none">Não selecionado</string>
+    <string name="settings_widget_hide_apps_count">Selecionados: %1$d</string>
     <string name="settings_widget_reset_position_button">Redefinir posição</string>
     <string name="settings_reset_seat_channel">Redefinir canal dos bancos</string>
     <string name="settings_reset_seat_channel_hint">Se o aquecimento ou a ventilação dos bancos parar após trocar de carro</string>
@@ -116,7 +167,7 @@
     <string name="orb_agent">Agente:</string>
     <string name="settings_voice_native_assistant_header">Assistente de voz nativo da BYD</string>
     <string name="settings_voice_disable_native_label">Desativar o assistente de voz integrado</string>
-    <string name="settings_voice_disable_native_description">Oculta o assistente de voz nativo da BYD para que ele não interrompa. Reversível.</string>
+    <string name="settings_voice_disable_native_description">Oculta o assistente de voz nativo da BYD para que ele não interrompa. O app Shortcuts (comandos rápidos) desaparece junto, ele faz parte do assistente. Reversível: desligue o botão e reinicie a central multimídia, os dois voltam.</string>
     <string name="settings_voice_native_assistant_reboot_note">Entra em vigor após reiniciar a central multimídia.</string>
     <string name="settings_widget_opacity_label">Opacidade</string>
     <string name="settings_widget_scale_label">Tamanho</string>
@@ -290,6 +341,13 @@
     <string name="automation_trigger_type_button_press">Pressionamento de botão</string>
     <string name="automation_trigger_button_label">Botão %1$d</string>
     <string name="automation_trigger_button_picker_label">Botão</string>
+    <string name="automation_trigger_type_steering_key">Tecla do volante</string>
+    <string name="automation_trigger_steering_key_picker_label">Tecla do volante</string>
+    <string name="automation_trigger_steering_key_unassigned">Tecla não atribuída</string>
+    <string name="automation_trigger_steering_key_assign">atribuir</string>
+    <string name="automation_steering_key_occupied_projection">Esta tecla liga a navegação no painel de instrumentos. Libere-a em Configurações, seção Tela, ou escolha outra.</string>
+    <string name="automation_steering_key_occupied_voice">Esta tecla chama o assistente de voz do BYDMate. Altere a tecla em Configurações, seção Agente de voz, ou escolha outra.</string>
+    <string name="automation_steering_key_occupied_knob">O toque no botão giratório está ocupado pela função play/pause. Desative-a em Configurações, seção Tela, ou escolha outra tecla.</string>
 
     <!-- Schedule trigger (exact time / range + days of week) -->
     <string name="automation_schedule_mode_exact">Exato</string>
@@ -312,6 +370,8 @@
     <string name="automation_delay_3s">3 s</string>
     <string name="automation_delay_5s">5 s</string>
     <string name="automation_delay_10s">10 s</string>
+    <string name="automation_delay_30s">30 s</string>
+    <string name="automation_delay_60s">1 min</string>
     <string name="automation_delay_display_name">Atraso %1$s</string>
     <string name="automation_add_action_button">+ Adicionar ação</string>
     <string name="automation_action_dplus_command">Comando do veículo</string>
@@ -499,12 +559,8 @@
     <string name="applauncher_empty">Nada encontrado</string>
     <string name="applauncher_close_button">Fechar</string>
     <string name="battery_health_charging_cd">Carregamento</string>
-    <string name="battery_health_dialog_title">Saúde da bateria</string>
-    <string name="battery_health_now_header">Agora (do carro, ao vivo)</string>
-    <string name="battery_health_lifetime_header">Tempo de vida (dados do sistema)</string>
     <string name="battery_health_cell_delta_label">Delta das células</string>
     <string name="battery_health_cell_delta_value">%1$.3f V</string>
-    <string name="battery_health_banks_header">Bancos</string>
     <string name="battery_health_cell_voltage_value">%1$.3f V</string>
     <string name="battery_health_bat_temp_label">temp. da bateria</string>
     <string name="battery_health_12v_label">Sistema 12V</string>
@@ -513,9 +569,6 @@
     <string name="battery_health_bms_mileage_value">%1$.1f km</string>
     <string name="battery_health_pumped_label">carregado</string>
     <string name="battery_health_pumped_value">%1$.0f kWh</string>
-    <string name="battery_health_disabled_title">Dados do sistema desativados</string>
-    <string name="battery_health_disabled_hint">Ative \"Dados do sistema\" nas Configurações para ver o SoH, a quilometragem do BMS e o total carregado do carro.</string>
-    <string name="battery_health_avg_soc_header">SOC médio (histórico do BYDMate)</string>
     <string name="battery_health_avg_since_charge_label">desde a última carga</string>
     <string name="battery_health_avg_all_time_label">todo o período</string>
     <string name="battery_health_avg_soc_hint" formatted="false">Nível de carga médio ponderado pelo tempo: quanto mais a bateria fica carregada, maior o valor. Baterias LFP da BYD envelhecem menos quando mantidas mais baixas: armazenar com carga alta acelera o envelhecimento. Referência: até 65% ótimo, 65-85% normal, acima de 85% considere carregar mais tarde ou com menos frequência. Uma carga a 100% a cada 1-2 semanas ainda é necessária para balancear as células. Calculado pelo histórico de viagens e cargas do BYDMate.</string>
@@ -546,7 +599,7 @@
     <string name="update_downloading_paused">Pausado...</string>
     <string name="update_download_error">Erro no download (código %1$d)</string>
     <string name="update_download_notification_description">Atualização do BYDMate</string>
-    <string name="update_downloading_start">Baixando: 0%%</string>
+    <string name="update_downloading_start" formatted="false">Baixando: 0%</string>
     <string name="charges_day_today">hoje (%1$s)</string>
     <string name="charges_day_yesterday">ontem</string>
 
@@ -653,6 +706,15 @@
     <string name="settings_config_export_confirm_title">Exportar configuração?</string>
     <string name="settings_config_export_confirm_body">O backup contém o histórico de viagens com rotas GPS e as suas chaves de API em texto simples. O ficheiro será guardado na pasta pública Download. Guarde-o num local seguro e não o partilhe.</string>
     <string name="settings_config_export_confirm_ok">Exportar</string>
+    <!-- Fid catalog dump (Task O) -->
+    <string name="settings_fid_dump_button">Salvar catálogo de fids</string>
+    <string name="settings_fid_dump_desc">Nomes e valores das constantes do SDK. Apenas identificadores técnicos: sem VIN, sem localização, sem dados pessoais</string>
+    <string name="settings_fid_dump_saved">Salvo: %1$s</string>
+    <string name="settings_fid_dump_in_progress">Lendo os fids...</string>
+    <string name="settings_fid_dump_empty">O catálogo de fids está vazio neste firmware</string>
+    <string name="settings_fid_dump_error_unavailable">daemon indisponível</string>
+    <!-- %1$s = short technical detail, e.g. "status=-1 at chunk 0" or "transact failed at chunk 2" -->
+    <string name="settings_fid_dump_error_read">erro de leitura: %1$s</string>
     <!-- ==== Automation i18n (systematized) ==== -->
     <!-- categories -->
     <string name="auto_cat_body">Carroceria</string>
@@ -688,6 +750,7 @@
     <string name="auto_enum_code_n">N</string>
     <string name="auto_enum_code_normal">NORMAL</string>
     <string name="auto_enum_code_off">OFF</string>
+    <string name="auto_enum_code_offroad">OFF-ROAD</string>
     <string name="auto_enum_code_on">ON</string>
     <string name="auto_enum_code_p">P</string>
     <string name="auto_enum_code_r">R</string>
@@ -705,6 +768,10 @@
     <string name="auto_enum_open_f">Aberta</string>
     <string name="auto_enum_open_m">Aberto</string>
     <string name="auto_enum_recirc">Ar interno</string>
+    <string name="auto_enum_turn_off">Desligado</string>
+    <string name="auto_enum_turn_left">Esquerdo</string>
+    <string name="auto_enum_turn_right">Direito</string>
+    <string name="auto_enum_turn_hazard">Pisca-alerta</string>
     <string name="auto_enum_unfastened">Não afivelado</string>
     <string name="auto_enum_unlocked">Destravado</string>
     <!-- trigger param names -->
@@ -752,6 +819,7 @@
     <string name="auto_param_rain">Sensor de chuva</string>
     <string name="auto_param_lightlow">Farol baixo</string>
     <string name="auto_param_drl">DRL</string>
+    <string name="auto_param_turnsignal">Pisca-pisca</string>
     <!-- action names -->
     <string name="auto_act_vent_windows">Ventilar vidros</string>
     <string name="auto_act_close_all_windows">Fechar todos os vidros</string>
@@ -816,6 +884,8 @@
     <string name="auto_act_ambient_light_off">Luz ambiente desl.</string>
     <string name="auto_act_drl_on">DRL lig.</string>
     <string name="auto_act_drl_off">DRL desl.</string>
+    <string name="auto_act_hazard_on">Pisca-alerta: ligar</string>
+    <string name="auto_act_hazard_off">Pisca-alerta: desligar</string>
     <string name="auto_act_interior_light_on">Luz interna lig.</string>
     <string name="auto_act_interior_light_off">Luz interna desl.</string>
     <string name="auto_act_lock_doors">Travar portas</string>
@@ -881,6 +951,15 @@
     <string name="auto_a11y_move_up">Mover para cima</string>
     <string name="auto_a11y_move_down">Mover para baixo</string>
     <string name="auto_a11y_run_now">Executar agora</string>
+    <!-- safety gate block reasons (ActionDispatcher.BlockReason) -->
+    <string name="gate_speed_unknown">Velocidade desconhecida</string>
+    <string name="gate_sunroof_speed">Abertura do teto solar bloqueada a %1$d km/h (&gt;80)</string>
+    <string name="gate_windows_speed">Abertura dos vidros bloqueada a %1$d km/h (&gt;120)</string>
+    <string name="gate_unlock_speed_unknown">Velocidade desconhecida, não destranco as portas</string>
+    <string name="gate_unlock_speed">Destrancamento das portas bloqueado a %1$d km/h (&gt;30)</string>
+    <string name="gate_forbidden_command">Comando proibido</string>
+    <string name="gate_frunk_speed_unknown">Velocidade desconhecida, não é possível abrir o porta-malas dianteiro</string>
+    <string name="gate_frunk_moving">O porta-malas dianteiro abre apenas parado (velocidade %1$d km/h)</string>
 
     <!-- Voice agent (Wave J): multi-provider LLM connections -->
     <string name="settings_conn_not_configured">Conexão não configurada</string>
@@ -898,6 +977,9 @@
     <string name="settings_conn_checking">Verificando…</string>
     <string name="settings_zai_hint">glm-4.7-flash gratuita, recomendada como principal</string>
     <string name="settings_custom_hint">Qualquer API compatível com OpenAI. A predefinição preenche o endereço e o modelo, a chave é sua.</string>
+    <string name="settings_custom_extra_json_label">Parâmetros extra do pedido (JSON)</string>
+    <string name="settings_custom_extra_json_hint">Adicionados a cada pedido a este servidor, por exemplo {\"thinking\": false} para desativar o raciocínio</string>
+    <string name="settings_custom_extra_json_invalid">JSON inválido</string>
     <string name="settings_custom_list_models">Lista de modelos</string>
     <string name="settings_error_dns">Servidor inacessivel: a internet do carro nao consegue resolver este endereco (DNS)</string>
     <string name="settings_error_timeout">O servidor nao respondeu a tempo</string>
@@ -970,6 +1052,10 @@
     <string name="settings_agent_gender_male">Masculino</string>
     <string name="settings_agent_gender_female">Feminino</string>
     <string name="settings_agent_gender_hint">Aplica-se a todas as vozes: cada fonte tem uma opção masculina e feminina</string>
+    <string name="settings_agent_memory_title">Memória sobre o motorista</string>
+    <string name="settings_agent_memory_hint">O agente memoriza o nome e as preferências constantes quando você lhe diz isso. Diga “esqueça …” para remover um fato</string>
+    <string name="settings_agent_memory_empty">Nada memorizado ainda</string>
+    <string name="settings_agent_memory_forget_all">Esquecer tudo</string>
     <string name="settings_voice_button_mic_header">Botão e microfone</string>
     <string name="settings_section_service_title">Serviço e dados</string>
     <string name="settings_battery_capacity_desc">Usado para estimar autonomia e custo</string>
@@ -982,6 +1068,8 @@
     <string name="settings_widget_reset_position_desc">Retornar o widget à posição padrão</string>
     <string name="settings_export_csv_desc">Todo o histórico de viagens em um arquivo na pasta Download</string>
     <string name="settings_log_recording_desc">Registro detalhado para diagnóstico. Ative quando o desenvolvedor solicitar</string>
+    <string name="settings_quiet_notification_title">Notificação silenciosa</string>
+    <string name="settings_quiet_notification_desc">A notificação do BYDMate vai para a lista recolhida sem ícone na barra de status. Não é possível removê-la totalmente: o Android exige uma notificação para o trabalho em segundo plano</string>
     <string name="settings_config_export_desc">Backup: histórico de viagens com GPS e chaves de API em texto simples, arquivo na pasta Download</string>
     <string name="settings_config_restore_desc">Os dados e configurações atuais serão totalmente substituídos pelo conteúdo do backup</string>
     <string name="settings_autostart_header">Início automático</string>
@@ -1029,6 +1117,7 @@
     <string name="voice_thinking">Pensando</string>
     <string name="voice_error_model_missing">O modelo de voz não está baixado. Baixe-o em Configurações, seção Agente de voz.</string>
     <string name="voice_error_lang_not_ru">Os comandos de voz entendem apenas fala em russo. Em Configurações, defina Idioma de voz: Russo.</string>
+    <string name="voice_block_park_required">É necessário estar em P</string>
     <string name="settings_asr_gigaam_title">Reconhecimento de fala</string>
     <string name="settings_asr_gigaam_ready">Modelo pronto</string>
     <string name="settings_asr_gigaam_download">Baixar (%1$s)</string>
@@ -1072,6 +1161,134 @@
     <string name="settings_hud_status_on">Transmissão para o HUD ativa</string>
     <string name="settings_hud_status_bind_failed">Falha ao conectar ao barramento SOME/IP</string>
     <string name="settings_hud_hint">Requer versão com head-up display. Os dados vêm da janela do Yandex Navigator</string>
+    <!-- Blind-spot cameras -->
+    <string name="settings_blindspot_header">Pontos cegos</string>
+    <string name="settings_blindspot_title">Câmera pela seta</string>
+    <string name="settings_blindspot_desc">Seta à esquerda - câmera esquerda no painel de instrumentos, à direita - uma janelinha na tela principal. Desativado por padrão.</string>
+    <string name="settings_blindspot_threshold_title">Limite de velocidade</string>
+    <string name="settings_blindspot_threshold_desc">Abaixo desta velocidade a câmera não é exibida</string>
+    <string name="settings_blindspot_pip_width_title">Largura da janelinha</string>
+    <string name="settings_blindspot_pip_width_desc">Largura da janelinha na tela principal em % da largura da tela</string>
+    <string name="settings_blindspot_position_title">Posição da janelinha</string>
+    <string name="settings_blindspot_position_desc">Mostra uma janelinha vazia sobre a tela: arraste com o dedo até onde a câmera deve ficar</string>
+    <string name="settings_blindspot_position_button">Ajustar a posição</string>
+    <string name="settings_blindspot_position_done">Pronto</string>
+    <string name="settings_blindspot_position_drag">Arraste a janelinha</string>
+    <string name="settings_blindspot_both_main_title">Ambas as câmeras na tela principal</string>
+    <string name="settings_blindspot_both_main_desc">A câmera esquerda aparece ao lado da direita na tela, o painel de instrumentos não é usado</string>
+    <string name="settings_blindspot_glow_title">Destaque quando houver um objeto no ponto cego</string>
+    <string name="settings_blindspot_glow_desc">Moldura laranja em volta da janela enquanto o sensor detecta um carro ao lado</string>
+    <string name="settings_blindspot_hint">Requer versão com câmeras de visão 360°. Quando a projeção no painel não estiver disponível, a janelinha funciona na tela principal.</string>
     <string name="settings_secret_show">Mostrar chave</string>
     <string name="settings_secret_hide">Ocultar chave</string>
+
+    <!-- Split-screen pill menu -->
+    <string name="split_menu_mirror">Trocar lados</string>
+    <string name="split_menu_swap">Trocar aplicativos</string>
+    <string name="split_menu_pick_left">Aplicativo à esquerda…</string>
+    <string name="split_menu_pick_right">Aplicativo à direita…</string>
+    <string name="split_menu_exit">Sair</string>
+    <string name="split_picker_title_change">Escolher aplicativo</string>
+    <string name="split_picker_title_left">Escolha um aplicativo para o painel esquerdo</string>
+    <string name="split_picker_title_right">Escolha um aplicativo para o painel direito</string>
+    <string name="split_picker_title_wide">Escolha um aplicativo para o painel largo (2/3)</string>
+    <string name="split_picker_title_narrow">Escolha um aplicativo para o painel estreito (1/3)</string>
+    <string name="split_freeform_reboot_hint">A tela dividida será ativada após reiniciar o carro</string>
+    <string name="split_freeform_unsupported_hint">A tela dividida não está disponível no firmware deste carro</string>
+    <string name="split_launch_failed">Falha ao iniciar a tela dividida</string>
+    <string name="split_launch_failed_adb">Falha ao iniciar a tela dividida: é necessário ADB desbloqueado</string>
+    <!-- Automation action: split_screen -->
+    <string name="automation_action_split_screen">Tela dividida</string>
+    <string name="auto_act_split_screen">Tela dividida</string>
+    <!-- Automation actions: split_screen_close / split_screen_toggle (no payload) -->
+    <string name="automation_action_split_screen_close">Fechar tela dividida</string>
+    <string name="auto_act_split_screen_close">Fechar tela dividida</string>
+    <string name="automation_action_split_screen_toggle">Alternar tela dividida</string>
+    <string name="auto_act_split_screen_toggle">Alternar tela dividida</string>
+    <string name="split_action_narrow_label">Aplicativo 1/3</string>
+    <string name="split_action_wide_label">Aplicativo 2/3</string>
+    <string name="split_action_side_left">1/3 esquerda</string>
+    <string name="split_action_side_right">1/3 direita</string>
+    <string name="split_action_tap_to_configure">Escolher aplicativos</string>
+    <string name="auto_msg_split_narrow_empty">Ação #%1$d: aplicativo 1/3 não selecionado</string>
+    <string name="auto_msg_split_wide_empty">Ação #%1$d: aplicativo 2/3 não selecionado</string>
+    <string name="auto_msg_split_same_package">Ação #%1$d: os dois aplicativos devem ser diferentes</string>
+    <string name="auto_msg_split_invalid_side">Ação #%1$d: lado deve ser left ou right</string>
+    <string name="settings_widget_left_tap_mode_label">Ação do toque esquerdo</string>
+    <string name="settings_widget_left_tap_mode_app">Abrir aplicativo</string>
+    <string name="settings_widget_left_tap_mode_split">Iniciar tela dividida</string>
+    <!-- Split-screen settings section -->
+    <string name="settings_section_split_title">Tela dividida</string>
+    <string name="settings_split_enable_title">Tela dividida 1/3 + 2/3</string>
+    <string name="settings_split_enable_desc">Duas janelas freeform: uma em um terço da tela, a outra em dois terços. Desativado por padrão.</string>
+    <string name="settings_split_clear_pair_title">Redefinir último par</string>
+    <string name="settings_split_clear_pair_desc">Limpar o par de aplicativos salvo. O próximo lançamento abrirá o seletor.</string>
+    <string name="settings_split_pair_cleared">Par redefinido</string>
+    <string name="settings_split_wide_app_title">Painel largo (2/3)</string>
+    <string name="settings_split_narrow_app_title">Painel estreito (1/3)</string>
+    <string name="settings_split_app_not_selected">não selecionado</string>
+    <string name="settings_split_howto_body">Há três maneiras de ligar a tela dividida.\nA mais simples: toque no terço esquerdo do widget flutuante. Para isso, ative Zonas de toque na seção Toque no widget e escolha Iniciar tela dividida em Ação do toque esquerdo.\nPelas automações: adicione a ação Tela dividida a uma regra. Ao lado ficam Fechar tela dividida e Alternar tela dividida.\nPor voz: basta pedir ao Agente de voz para ligar a tela dividida.</string>
+    <string name="settings_split_mechanism_title">Mecanismo de divisão</string>
+    <string name="settings_split_mechanism_freeform">Janelas do BYDMate</string>
+    <string name="settings_split_mechanism_native">Divisão nativa</string>
+    <string name="settings_split_mechanism_native_hint">A divisão é feita pelo firmware do carro. O resultado depende do firmware: dois painéis de 1/3 e 2/3 ou metade a metade, escolhendo o segundo aplicativo na tela.</string>
+    <string name="settings_split_mechanism_platformized_hint">Neste firmware o próprio carro divide a tela: os painéis de 1/3 e 2/3, o divisor e o gesto de troca são nativos. O BYDMate apenas inicia o par escolhido e devolve o aplicativo ao seu painel.</string>
+    <string name="settings_split_try_native_hint">Experimente o modo Divisão nativa.</string>
+    <string name="split_feature_disabled">Tela dividida desativada nas configurações</string>
+    <!-- Tech panel: compact card cell + full screen -->
+    <string name="dashboard_battery_insulation_label">isolamento</string>
+    <string name="tech_title">Técnica</string>
+    <string name="tech_status_online">autoservice online</string>
+    <string name="tech_status_offline">autoservice offline</string>
+    <string name="tech_no_data">O carro não fornece estes dados</string>
+    <string name="tech_card_battery_now">Bateria · agora</string>
+    <string name="tech_card_limits">Limites do BMS</string>
+    <string name="tech_card_cells">Células</string>
+    <string name="tech_card_motors">Motores e inversores</string>
+    <string name="tech_card_climate">Climatização</string>
+    <string name="tech_card_tyres">Pneus · pressão / temperatura</string>
+    <string name="tech_card_history">Bateria · histórico</string>
+    <string name="tech_label_hv_voltage">tensão HV</string>
+    <string name="tech_label_power">potência</string>
+    <string name="tech_label_battery_power">potência da bateria</string>
+    <string name="tech_label_max_charge">potência máx. de carga</string>
+    <string name="tech_label_max_discharge">potência disponível da bateria</string>
+    <string name="tech_label_motor_temp">temperatura do motor</string>
+    <string name="tech_label_inverter_temp">temperatura do inversor</string>
+    <string name="tech_label_rpm">rotações, rpm</string>
+    <string name="tech_label_pedals">pedal do acelerador / travão</string>
+    <string name="tech_label_front">frente</string>
+    <string name="tech_label_rear">trás</string>
+    <string name="tech_label_compressor">compressor</string>
+    <string name="tech_label_climate">climatização</string>
+    <string name="tech_label_inside_outside">no interior / no exterior</string>
+    <string name="tech_on">ligado</string>
+    <string name="tech_off">desligado</string>
+    <string name="tech_tyre_fl">FE</string>
+    <string name="tech_tyre_fr">FD</string>
+    <string name="tech_tyre_rl">TE</string>
+    <string name="tech_tyre_rr">TD</string>
+    <string name="tech_value_mohm">%1$.1f MΩ</string>
+    <string name="tech_value_mv">%1$d mV</string>
+    <string name="tech_value_volt">%1$d V</string>
+    <string name="tech_value_kw">%1$d kW</string>
+    <string name="tech_value_watt">%1$d W</string>
+    <string name="tech_value_percent_per_hour">%1$.2f %%/h</string>
+    <string name="tech_value_deg">%1$d°</string>
+    <string name="tech_value_temp">%1$d°C</string>
+    <string name="tech_value_percent">%1$d%%</string>
+    <string name="tech_value_tyre">%1$.2f bar · %2$d°</string>
+    <string name="tech_value_tyre_pressure">%1$.2f bar</string>
+    <string name="tech_value_cell_scale">%1$.2f V</string>
+    <string name="tech_hint_soh" formatted="false">Saúde da bateria: quanta capacidade resta em relação à bateria nova. 100% num carro novo, desce lentamente com os anos. O valor é calculado pelo próprio carro.</string>
+    <string name="tech_hint_hv_voltage">Tensão da bateria de tração. Sobe ao carregar e desce à medida que descarrega, neste carro cerca de 450…560 V. Por si só diz pouco, é útil junto com a potência.</string>
+    <string name="tech_hint_motor_power">Potência nos motores elétricos agora: quanto o carro está a entregar às rodas ou a receber delas durante a regeneração. Zero quando parado. O valor é calculado pelo próprio carro.</string>
+    <string name="tech_hint_power">Quanta energia a bateria está a entregar agora. Positivo: o carro está a gastar (aceleração, climatização). Negativo: a bateria está a receber energia, seja regeneração ao travar seja carregamento num carregador. Segundo número: a que velocidade a carga está a esgotar-se, por cento à hora. Quando parado é o consumo da eletrónica de bordo.</string>
+    <string name="tech_hint_12v">Tensão da bateria normal de 12 volts que alimenta a eletrónica. Com o carro ligado fica entre 13…14,5 V. Se estacionado ficar abaixo de 12 V, a bateria está a enfraquecer.</string>
+    <string name="tech_hint_insulation">Resistência entre a bateria de alta tensão e a carroçaria. Quanto maior, melhor: o normal são alguns megaohms. Se descer para 0,5 MΩ ou menos, há isolamento danificado nalgum ponto, é hora de ir à oficina.</string>
+    <string name="tech_hint_bms_limits">O teto que o controlador da bateria permite neste momento: quanto receber ao carregar (a estação pode dar menos) e quanto entregar na aceleração. Com a bateria fria ou quase cheia ambos os valores são menores: por isso no inverno a carga é mais lenta e a regeneração mais fraca.</string>
+    <string name="tech_hint_cells">A bateria é feita de centenas de células. São mostradas a mais fraca, a mais forte e a diferença entre elas. Uma diferença até 20…30 mV é normal. Uma diferença sempre grande significa que uma célula envelhece mais depressa do que as outras.</string>
+    <string name="tech_hint_motors">Temperatura dos motores elétricos e dos inversores que os comandam. Na condução normal até 60…80°. Em acelerações longas ou a rebocar aquecem mais, e o carro reduz a potência sozinho até arrefecerem.</string>
+    <string name="tech_hint_compressor">Quantos watts consome o compressor do ar condicionado e da bomba de calor. É o principal consumidor além dos motores: no calor do verão e no frio do inverno reduz bastante a autonomia.</string>
+    <string name="tech_hint_tyres">Pressão e temperatura de cada roda a partir dos sensores nos pneus. A pressão sobe 0,2…0,3 bar à medida que os pneus aquecem durante a viagem, é normal. Se uma roda estiver bastante abaixo das outras, verifique se está a perder ar.</string>
 </resources>

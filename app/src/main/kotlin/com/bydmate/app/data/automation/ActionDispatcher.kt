@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.bydmate.app.R
 import com.bydmate.app.cluster.ClusterVoiceControl
 import com.bydmate.app.data.local.entity.ActionDef
 import com.bydmate.app.data.parking.ParkingCameraConfig
@@ -24,6 +25,12 @@ import com.bydmate.app.data.vehicle.HelperClient
 import com.bydmate.app.data.vehicle.VehicleApi
 import com.bydmate.app.media.MediaSessionListenerService
 import com.bydmate.app.ui.overlay.CameraOverlayManager
+import com.bydmate.app.split.SplitPair
+import com.bydmate.app.split.SplitSessionManager
+import com.bydmate.app.split.SplitSessionState
+import com.bydmate.app.split.SplitSide
+import com.bydmate.app.split.SplitStartResult
+import com.bydmate.app.util.appLocalizedContext
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
@@ -42,6 +49,7 @@ class ActionDispatcher @Inject constructor(
     private val voiceActions: dagger.Lazy<com.bydmate.app.voice.VoiceAutomationActions>,
     private val clusterVoiceControl: ClusterVoiceControl,
     private val audioCapture: com.bydmate.app.voice.AudioCapture,
+    private val splitSessionManager: SplitSessionManager,
 ) {
     companion object {
         private const val TAG = "ActionDispatcher"
@@ -57,7 +65,7 @@ class ActionDispatcher @Inject constructor(
         private val YOUTUBE_PACKAGES = listOf("anddea.youtube", "com.google.android.youtube")
         private const val NAVI_PACKAGE = "ru.yandex.yandexnavi"
         // Hard cap on user-set delay action; protects against typos like "60000000".
-        private const val MAX_DELAY_MS = 30_000L
+        private const val MAX_DELAY_MS = 60_000L
         private val BLOCKED_PATTERNS = listOf("发送CAN", "执行SHELL", "下电")
 
         /**
@@ -117,21 +125,21 @@ class ActionDispatcher @Inject constructor(
         }
 
         /**
-         * Returns a block reason string if [command] is an aperture-open that is
+         * Returns a block reason if [command] is an aperture-open that is
          * forbidden at [speed], or null if the command is allowed. Sunshade (遮阳帘)
          * is interior and always returns null. Pure function -- unit-testable.
          *
          *  - Sunroof (天窗): blocked when speed > 80 or speed is null.
          *  - Windows (车窗/主驾/副驾/后左/后右): blocked when speed > 120 or speed is null.
          */
-        internal fun speedGateBlockReason(command: String, speed: Int?): String? {
+        internal fun speedGateBlockReason(command: String, speed: Int?): BlockReason? {
             if (isSunroofOpenCommand(command)) {
-                val s = speed ?: return "Скорость неизвестна"
-                if (s > 80) return "Открытие люка заблокировано на скорости ${s} км/ч (>80)"
+                val s = speed ?: return BlockReason.SpeedUnknown
+                if (s > 80) return BlockReason.SunroofSpeed(s)
             }
             if (isWindowOpenCommand(command)) {
-                val s = speed ?: return "Скорость неизвестна"
-                if (s > 120) return "Открытие окон заблокировано на скорости ${s} км/ч (>120)"
+                val s = speed ?: return BlockReason.SpeedUnknown
+                if (s > 120) return BlockReason.WindowsSpeed(s)
             }
             return null
         }
@@ -148,10 +156,10 @@ class ActionDispatcher @Inject constructor(
          * faster than 30 km/h, or when speed is unknown (fail-closed, same
          * policy as the frunk gate). Locking is never gated. Pure function.
          */
-        internal fun unlockGateBlockReason(command: String, speed: Int?): String? {
+        internal fun unlockGateBlockReason(command: String, speed: Int?): BlockReason? {
             if (!isDoorUnlockCommand(command)) return null
-            val s = speed ?: return "Скорость неизвестна, двери не отпираю"
-            if (s > 30) return "Отпирание дверей заблокировано на скорости ${s} км/ч (>30)"
+            val s = speed ?: return BlockReason.UnlockSpeedUnknown
+            if (s > 30) return BlockReason.UnlockSpeed(s)
             return null
         }
 
@@ -196,14 +204,14 @@ class ActionDispatcher @Inject constructor(
          * that need fail-closed window behavior check the snapshot themselves).
          * Pure function -- unit-testable and reusable by manual dispatch paths.
          */
-        internal fun safetyBlockReason(command: String, data: DiParsData?): String? {
-            if (BLOCKED_PATTERNS.any { command.contains(it) }) return "Запрещённая команда"
+        internal fun safetyBlockReason(command: String, data: DiParsData?): BlockReason? {
+            if (BLOCKED_PATTERNS.any { command.contains(it) }) return BlockReason.Forbidden
             // Frunk is a powered external panel — fail SAFE. Checked BEFORE the data==null
             // guard so missing telemetry (or unknown speed) blocks the open rather than
             // allowing it. Unlike windows, this aperture must never open above standstill.
             if (isFrontTrunkOpenCommand(command)) {
-                val speed = data?.speed ?: return "Скорость неизвестна, передний багажник не открыть"
-                if (speed > 0) return "Передний багажник открывается только на стоянке (скорость $speed км/ч)"
+                val speed = data?.speed ?: return BlockReason.FrunkSpeedUnknown
+                if (speed > 0) return BlockReason.FrunkMoving(speed)
             }
             // Door unlock is a safety gate like the frunk: checked BEFORE the
             // data==null guard so unknown speed blocks the unlock.
@@ -225,6 +233,37 @@ class ActionDispatcher @Inject constructor(
             val n = payload.toIntOrNull() ?: return VolumeOp.Invalid
             val target = if (signed) current + n else n
             return VolumeOp.SetTo(clampVolume(target, max))
+        }
+    }
+
+    /**
+     * Why a command was refused by a safety gate. The gate functions stay pure
+     * (no Context) and return this; [toText] renders it in the app's language —
+     * the gates run off an Activity, so the raw application context would follow
+     * the head unit's system locale instead (#162).
+     */
+    sealed class BlockReason {
+        data object SpeedUnknown : BlockReason()
+        data class SunroofSpeed(val speed: Int) : BlockReason()
+        data class WindowsSpeed(val speed: Int) : BlockReason()
+        data object UnlockSpeedUnknown : BlockReason()
+        data class UnlockSpeed(val speed: Int) : BlockReason()
+        data object Forbidden : BlockReason()
+        data object FrunkSpeedUnknown : BlockReason()
+        data class FrunkMoving(val speed: Int) : BlockReason()
+
+        fun toText(context: Context): String {
+            val lc = context.appLocalizedContext()
+            return when (this) {
+                is SpeedUnknown -> lc.getString(R.string.gate_speed_unknown)
+                is SunroofSpeed -> lc.getString(R.string.gate_sunroof_speed, speed)
+                is WindowsSpeed -> lc.getString(R.string.gate_windows_speed, speed)
+                is UnlockSpeedUnknown -> lc.getString(R.string.gate_unlock_speed_unknown)
+                is UnlockSpeed -> lc.getString(R.string.gate_unlock_speed, speed)
+                is Forbidden -> lc.getString(R.string.gate_forbidden_command)
+                is FrunkSpeedUnknown -> lc.getString(R.string.gate_frunk_speed_unknown)
+                is FrunkMoving -> lc.getString(R.string.gate_frunk_moving, speed)
+            }
         }
     }
 
@@ -268,6 +307,9 @@ class ActionDispatcher @Inject constructor(
             "cluster_projection" -> dispatchClusterProjection(action)
             "speak" -> dispatchSpeak(action)
             "agent_query" -> dispatchAgentQuery(action)
+            "split_screen" -> dispatchSplitScreen(action)
+            "split_screen_close" -> dispatchSplitScreenClose()
+            "split_screen_toggle" -> dispatchSplitScreenToggle()
             else -> DispatchResult(false, "Unknown action kind: ${action.kind}")
         }
     } catch (e: Exception) {
@@ -333,6 +375,76 @@ class ActionDispatcher @Inject constructor(
         return voiceActions.get().agentQuery(prompt)
     }
 
+    /**
+     * "split_screen": launch two apps in freeform split layout via SplitSessionManager.
+     * Payload: {"narrow":"<pkg>","wide":"<pkg>","side":"left"|"right"}.
+     * No speed/safety gate — split is not a dangerous action.
+     */
+    private suspend fun dispatchSplitScreen(action: ActionDef): DispatchResult {
+        val json = parsePayload(action.payload)
+            ?: return DispatchResult(false, "payload не задан")
+        val narrow = json.optString("narrow").takeIf(String::isNotBlank)
+            ?: return DispatchResult(false, "narrow не задан")
+        val wide = json.optString("wide").takeIf(String::isNotBlank)
+            ?: return DispatchResult(false, "wide не задан")
+        val side = when (json.optString("side")) {
+            "left" -> SplitSide.LEFT
+            "right" -> SplitSide.RIGHT
+            else -> return DispatchResult(false, "неверная сторона")
+        }
+        return when (splitSessionManager.start(SplitPair(narrow, wide, side))) {
+            SplitStartResult.OK -> DispatchResult(true)
+            SplitStartResult.FREEFORM_UNAVAILABLE ->
+                DispatchResult(false, freeformUnavailableHint())
+            SplitStartResult.LAUNCH_FAILED ->
+                DispatchResult(false, context.getString(R.string.split_launch_failed))
+            SplitStartResult.DISABLED ->
+                DispatchResult(false, context.getString(R.string.split_feature_disabled))
+        }
+    }
+
+    /**
+     * "split_screen_close": end the split session. No payload, no speed gate.
+     * Idempotent — an absent session already IS the requested end state, and
+     * exit() is a no-op there, so this reports success either way.
+     */
+    private suspend fun dispatchSplitScreenClose(): DispatchResult {
+        splitSessionManager.exit()
+        return DispatchResult(true)
+    }
+
+    /**
+     * "split_screen_toggle": session running → exit, otherwise restore the last pair.
+     * No payload, no speed gate. The first-pair picker is deliberately NOT opened from
+     * automation (a rule fires without anyone waiting to answer a dialog), so a pair
+     * that was never saved is a plain failure.
+     */
+    private suspend fun dispatchSplitScreenToggle(): DispatchResult {
+        if (splitSessionManager.state.value is SplitSessionState.Active) {
+            splitSessionManager.exit()
+            return DispatchResult(true)
+        }
+        return when (splitSessionManager.startLastPair()) {
+            null -> DispatchResult(false, "пара для разделения экрана не сохранена")
+            SplitStartResult.OK -> DispatchResult(true)
+            SplitStartResult.FREEFORM_UNAVAILABLE ->
+                DispatchResult(false, freeformUnavailableHint())
+            SplitStartResult.LAUNCH_FAILED ->
+                DispatchResult(false, context.getString(R.string.split_launch_failed))
+            SplitStartResult.DISABLED ->
+                DispatchResult(false, context.getString(R.string.split_feature_disabled))
+        }
+    }
+
+    /**
+     * Hint for FREEFORM_UNAVAILABLE: on firmwares proven to ignore the freeform flag (#139)
+     * a reboot never helps, so promising one would be a lie.
+     */
+    private fun freeformUnavailableHint(): String = context.getString(
+        if (splitSessionManager.freeformUnsupported()) R.string.split_freeform_unsupported_hint
+        else R.string.split_freeform_reboot_hint
+    )
+
     private suspend fun dispatchDelay(action: ActionDef): DispatchResult {
         val ms = action.payload?.toLongOrNull()
             ?: return DispatchResult(false, "Длительность паузы не задана")
@@ -380,7 +492,7 @@ class ActionDispatcher @Inject constructor(
         val blockReason = getBlockReason(action.command, data)
         if (blockReason != null) {
             Log.w(TAG, "Blocked '${action.command}': $blockReason")
-            return DispatchResult(false, blockReason)
+            return DispatchResult(false, blockReason.toText(context))
         }
         val result = vehicleApi.dispatch(action.command)
         val success = result.isSuccess
@@ -392,7 +504,7 @@ class ActionDispatcher @Inject constructor(
 
     // Delegate to the companion pure function so all callers (dispatch + manual test button)
     // share identical gate logic.
-    private fun getBlockReason(command: String, data: DiParsData?): String? =
+    private fun getBlockReason(command: String, data: DiParsData?): BlockReason? =
         safetyBlockReason(command, data)
 
     // --- notifications (user-visible) ---

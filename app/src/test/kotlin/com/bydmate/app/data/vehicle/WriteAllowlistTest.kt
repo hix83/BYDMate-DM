@@ -239,6 +239,26 @@ class WriteAllowlistTest {
         assertEquals(2, al.find("drl_off")!!.valueMin)
     }
 
+    @Test fun `hazard is carved out of banned dev 1004`() {
+        assertTrue(
+            "hazard write fid must be carved out of the dev 1004 ban",
+            (1004 to 871366669) in WriteAllowlist.BANNED_DEV_FID_EXCEPTIONS,
+        )
+        val al = WriteAllowlist.loadProduction { "{}" }
+        val on = al.find("hazard_on")
+        assertNotNull(on)
+        assertEquals(1004, on!!.dev)
+        assertEquals(871366669, on.writeFid)
+        assertEquals(1, on.valueMin)
+        assertEquals(1, on.valueMax)
+        // read channel 950009900 carries a different mask — readback would false-mismatch
+        assertNull(on.readbackFid)
+        val off = al.find("hazard_off")!!
+        assertEquals(0, off.valueMin)
+        assertEquals(0, off.valueMax)
+        assertNull(off.readbackFid)
+    }
+
     // ── Seat heat/vent re-wired to validated dev=1000 switch+level 2026-06-29 ──
     @Test fun `seat heat and vent switch plus level entries are validated on dev 1000`() {
         val al = WriteAllowlist.loadProduction { "{}" }
@@ -259,6 +279,17 @@ class WriteAllowlistTest {
         assertEquals(0, sw.valueMin); assertEquals(2, sw.valueMax)
         val lvl = al.find("driver_seat_heat_level")!!
         assertEquals(1, lvl.valueMin); assertEquals(5, lvl.valueMax)
+    }
+
+    /** The readback verifier compares against a 1=on/2=off enum, so only fids that carry that
+     *  enum may be listed. The passenger pair in the catalog (711983128/711983132) are LEVELS
+     *  and would contradict every level-2..5 command on a healthy Leopard 3. */
+    @Test fun `seat status fids are the driver enum pair only`() {
+        assertEquals(
+            mapOf(SeatGroup.DRIVER_VENT to 702545928, SeatGroup.DRIVER_HEAT to 702545932),
+            WriteAllowlist.SEAT_STATUS_FIDS,
+        )
+        assertEquals(1000, WriteAllowlist.SEAT_STATUS_DEV)
     }
 
     // ── Fridge carved out of banned dev 1023, validated 2026-06-29 ────────────
@@ -303,6 +334,31 @@ class WriteAllowlistTest {
         assertEquals(1125122064, al.find("driver_seat_vent_fallback")!!.writeFid)
         assertEquals(1125122076, al.find("passenger_seat_heat_fallback")!!.writeFid)
         assertEquals(1125122072, al.find("passenger_seat_vent_fallback")!!.writeFid)
+    }
+
+    // ── #79: window CTRL channel (the only window family DiLink 3.0 exposes) ──
+    @Test fun `window ctrl entries cover all four doors with range 1 to 5`() {
+        val al = WriteAllowlist.loadProduction { "{}" }
+        val expected = mapOf(
+            "window_driver_ctrl" to 1125122104,
+            "window_passenger_ctrl" to 1125122107,
+            "window_rear_left_ctrl" to 1125122112,
+            "window_rear_right_ctrl" to 1125122115,
+        )
+        for ((name, fid) in expected) {
+            val e = al.find(name) ?: error("missing $name")
+            assertEquals("$name dev", 1001, e.dev)
+            assertEquals("$name fid", fid, e.writeFid)
+            assertEquals("$name valueMin", 1, e.valueMin)
+            assertEquals("$name valueMax", 5, e.valueMax)
+            assertEquals("$name category", "windows", e.category)
+        }
+        // The whole family is unvalidated: the front fids were live-confirmed on Leopard 3
+        // only for values 1/2, which is narrower than the declared 1..5 range, and the rear
+        // fids are no-ops there. A DiLink 3.0 field report has to cover the range.
+        for (name in expected.keys) {
+            assertFalse("$name must not claim live validation", al.find(name)!!.validated)
+        }
     }
 
     // ── Dim 6, Test 6: LIVE_VALIDATED has no duplicate actionName ────────────

@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
@@ -29,6 +30,11 @@
     <uses-permission
         android:name="android.permission.READ_LOGS"
         tools:ignore="ProtectedPermissions" />
+
+    <!-- The camera permission is for the head unit's own cameras; the app runs fine without one. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <queries>
         <!-- ACTION_DIAL (call action — user taps green button to actually dial) -->
@@ -91,6 +97,15 @@
             android:screenOrientation="landscape"
             android:theme="@style/Theme.BYDMate" />
 
+        <!-- Split-screen backdrop: fullscreen NavyDark activity, lives while a split session
+             is active. Not exported; started by SplitOverlayController. -->
+        <activity
+            android:name=".split.SplitStageActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.BYDMate" />
+
         <service
             android:name=".service.TrackingService"
             android:foregroundServiceType="location"
@@ -127,8 +142,32 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.USER_PRESENT" />
+                <!-- Sent by bydmate_helper (shell uid) after the Android 10 a11y recovery force-stop:
+                     TrackingService is not exported, an explicit broadcast to this receiver is the
+                     only way back in. Starting our own service is all it can do. -->
+                <action android:name="com.bydmate.app.action.RECOVER_START" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.HOME" />
+            </intent-filter>
+        </receiver>
+
+        <!-- UI7 cluster probe (test builds): driven from a Mac with `am broadcast`, see ClusterProbeRunner -->
+        <receiver
+            android:name=".cluster.ClusterProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.bydmate.app.CLUSTER_PROBE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Helper daemon binder delivery on firmwares that refuse addService to the shell
+             domain (#64/#148). Exported by necessity: the sender is the shell uid, not us —
+             HelperBinderHolder authenticates by spawn token + interface descriptor. -->
+        <receiver
+            android:name=".helper.HelperBinderReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.bydmate.app.helper.BINDER" />
             </intent-filter>
         </receiver>
 

@@ -19,6 +19,7 @@ import com.bydmate.app.data.local.DataThinningWorker
 import com.bydmate.app.data.local.HistoryImporter
 import com.bydmate.app.data.local.LocalePreferences
 import com.bydmate.app.data.local.decideLanguage
+import com.bydmate.app.data.automation.DriveModeRuleMigration
 import com.bydmate.app.data.local.dao.ChargeDao
 import com.bydmate.app.data.remote.InsightsManager
 import com.bydmate.app.data.repository.SettingsRepository
@@ -48,6 +49,8 @@ class BYDMateApp : Application(), Configuration.Provider {
     @Inject lateinit var chargeDao: ChargeDao
     @Inject lateinit var localePreferences: LocalePreferences
     @Inject lateinit var insightsManager: InsightsManager
+    @Inject lateinit var splitOverlayController: com.bydmate.app.split.SplitOverlayController
+    @Inject lateinit var driveModeRuleMigration: DriveModeRuleMigration
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -65,7 +68,11 @@ class BYDMateApp : Application(), Configuration.Provider {
         // instantiates this Application. Swallow there; on a real device the call succeeds.
         if (Build.VERSION.SDK_INT >= 28) {
             runCatching {
-                HiddenApiBypass.addHiddenApiExemptions("Landroid/os/ServiceManager;")
+                HiddenApiBypass.addHiddenApiExemptions(
+                    "Landroid/os/ServiceManager;",
+                    // AVMCamera / BmmCameraInfo probe and the BYDAuto*Device listener interfaces.
+                    "Landroid/hardware/",
+                )
             }.onFailure {
                 android.util.Log.w("BYDMateApp", "hidden-api exemption unavailable", it)
             }
@@ -89,6 +96,8 @@ class BYDMateApp : Application(), Configuration.Provider {
                     settingsRepository.setMigrationV2_4_17Done()
                     android.util.Log.i("BYDMateApp", "v2.4.17 migration: removed $removed phantom autoservice rows")
                 }
+                // One-shot: revive DriveMode rules saved against the old "0" = NORMAL code.
+                driveModeRuleMigration.runOnce()
                 // One-time cleanup of existing duplicates from v2.0.0
                 historyImporter.cleanupDuplicates()
                 // Only sync if setup is completed (prevents duplicates during first wizard run)
@@ -100,7 +109,9 @@ class BYDMateApp : Application(), Configuration.Provider {
             }
         }
         scheduleDataThinning()
-        registerActivityLifecycleCallbacks(WidgetLifecycleCallbacks(this))
+        registerActivityLifecycleCallbacks(WidgetLifecycleCallbacks(this, splitOverlayController))
+        // Start split-screen overlay observers (mirrors WidgetController init pattern).
+        splitOverlayController.start(appScope)
     }
 
     /**
@@ -161,32 +172,33 @@ class BYDMateApp : Application(), Configuration.Provider {
         }
     }
 
-    private class WidgetLifecycleCallbacks(private val app: Context) : ActivityLifecycleCallbacks {
-        private var resumedCount = 0
+    private class WidgetLifecycleCallbacks(
+        private val app: Context,
+        private val splitOverlay: com.bydmate.app.split.SplitOverlayController,
+    ) : ActivityLifecycleCallbacks {
+        private val counter = ForegroundActivityCounter()
 
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
         override fun onActivityStarted(activity: Activity) {}
 
         override fun onActivityResumed(activity: Activity) {
-            resumedCount++
-            if (resumedCount == 1) {
-                // User opened BYDMate → widget hides; also clear the
-                // "hidden until app launch" long-press flag so it reappears
-                // next time the app goes to background.
-                WidgetPreferences(app).setHiddenUntilAppLaunch(false)
-                WidgetController.setAppForegrounded(true)
-            }
+            if (!counter.onResumed(activity.javaClass)) return
+            // User opened BYDMate → widget hides; also clear the
+            // "hidden until app launch" long-press flag so it reappears
+            // next time the app goes to background.
+            WidgetPreferences(app).setHiddenUntilAppLaunch(false)
+            WidgetController.setAppForegrounded(true)
+            // Same edge hides the split pill (390-4) — the session keeps running.
+            splitOverlay.setOwnAppForegrounded(true)
         }
 
         override fun onActivityPaused(activity: Activity) {
-            resumedCount--
-            if (resumedCount <= 0) {
-                resumedCount = 0
-                WidgetController.setAppForegrounded(false)
-                val prefs = WidgetPreferences(app)
-                if (prefs.isEnabled() && Settings.canDrawOverlays(app)) {
-                    WidgetController.attach(app)
-                }
+            if (!counter.onPaused(activity.javaClass)) return
+            WidgetController.setAppForegrounded(false)
+            splitOverlay.setOwnAppForegrounded(false)
+            val prefs = WidgetPreferences(app)
+            if (prefs.isEnabled() && Settings.canDrawOverlays(app)) {
+                WidgetController.attach(app)
             }
         }
 

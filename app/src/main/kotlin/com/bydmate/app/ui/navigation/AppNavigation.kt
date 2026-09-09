@@ -251,7 +251,10 @@ fun AppNavigation(
                 )
             }
             composable(Screen.Dashboard.route) {
-                DashboardScreen(availableUpdateVersion = availableUpdateVersion)
+                DashboardScreen(
+                    availableUpdateVersion = availableUpdateVersion,
+                    onOpenTechPanel = { navController.navigate("tech_panel") },
+                )
             }
             composable(Screen.Trips.route) { TripsScreen() }
             composable(Screen.Charges.route) {
@@ -263,6 +266,9 @@ fun AppNavigation(
                     onNavigateToAgentChat = { navController.navigate("agent_chat") },
                     onNavigateToVoiceJournal = { navController.navigate("voice_journal") },
                 )
+            }
+            composable("tech_panel") {
+                com.bydmate.app.ui.tech.TechPanelScreen(onBack = { navController.popBackStack() })
             }
             composable("agent_chat") {
                 com.bydmate.app.ui.debug.AgentChatScreen(onBack = { navController.popBackStack() })

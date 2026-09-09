@@ -7,6 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+// LeftTapMode is in the same package (com.bydmate.app.ui.widget) — no import needed.
+
 class WidgetPreferencesTest {
 
     private lateinit var store: MutableMap<String, Any?>
@@ -164,6 +166,60 @@ class WidgetPreferencesTest {
         val migrated = WidgetPreferences(fakeSharedPrefs(store))
         assertTrue(migrated.isLeftTapZoningEnabled())
         assertFalse(store.containsKey(WidgetPreferences.LEGACY_KEY_LEFT_TAP_NAVIGATOR))
+    }
+
+    // --- LeftTapMode tests ---
+
+    @Test fun `leftTapMode defaults to APP when key is absent`() {
+        assertFalse(store.containsKey(WidgetPreferences.KEY_LEFT_TAP_MODE))
+        assertEquals(LeftTapMode.APP, prefs.getLeftTapMode())
+    }
+
+    @Test fun `setLeftTapMode SPLIT persists`() {
+        prefs.setLeftTapMode(LeftTapMode.SPLIT)
+        assertEquals(LeftTapMode.SPLIT, prefs.getLeftTapMode())
+    }
+
+    @Test fun `setLeftTapMode round-trip SPLIT back to APP`() {
+        prefs.setLeftTapMode(LeftTapMode.SPLIT)
+        prefs.setLeftTapMode(LeftTapMode.APP)
+        assertEquals(LeftTapMode.APP, prefs.getLeftTapMode())
+    }
+
+    @Test fun `getLeftTapMode returns APP when stored value is unrecognised`() {
+        // Simulate a future enum value written by a newer install, then downgraded.
+        store[WidgetPreferences.KEY_LEFT_TAP_MODE] = "UNKNOWN_FUTURE_VALUE"
+        val fresh = WidgetPreferences(fakeSharedPrefs(store))
+        assertEquals(LeftTapMode.APP, fresh.getLeftTapMode())
+    }
+
+    // --- hide-in-apps tests ---
+
+    @Test fun `hideInApps defaults to empty`() {
+        assertTrue(prefs.getHideInApps().isEmpty())
+    }
+
+    @Test fun `setHideInApps round-trips the package set`() {
+        prefs.setHideInApps(setOf("com.android.chrome", "anddea.youtube"))
+        assertEquals(setOf("com.android.chrome", "anddea.youtube"), prefs.getHideInApps())
+    }
+
+    @Test fun `setHideInApps empty clears the selection`() {
+        prefs.setHideInApps(setOf("com.android.chrome"))
+        prefs.setHideInApps(emptySet())
+        assertTrue(prefs.getHideInApps().isEmpty())
+    }
+
+    @Test fun `setHideInApps copies so later caller mutation does not leak in`() {
+        val picked = mutableSetOf("com.android.chrome")
+        prefs.setHideInApps(picked)
+        picked.add("ru.yandex.yandexnavi")
+        assertEquals(setOf("com.android.chrome"), prefs.getHideInApps())
+    }
+
+    @Test fun `getHideInApps does not hand out the stored instance`() {
+        prefs.setHideInApps(setOf("com.android.chrome"))
+        assertFalse(prefs.getHideInApps() === store[WidgetPreferences.KEY_HIDE_IN_APPS])
     }
 
     // --- Minimal fake of SharedPreferences used by WidgetPreferences ---

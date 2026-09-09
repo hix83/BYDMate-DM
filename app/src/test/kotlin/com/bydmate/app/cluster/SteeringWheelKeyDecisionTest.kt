@@ -83,4 +83,61 @@ class SteeringWheelKeyDecisionTest {
         assertEquals(LearnAction.CONSUME, learnDecision(305, isDown = false))
         assertEquals(LearnAction.CONSUME, learnDecision(309, isDown = false))
     }
+
+    @Test fun `knob press while disabled passes through to the native source switch`() {
+        assertEquals(
+            KnobDecision.PASS_THROUGH,
+            knobDecision(VOLUME_KNOB_PRESS_KEYCODE, isDown = true, enabled = false),
+        )
+    }
+
+    @Test fun `a non-knob key passes through even when the knob feature is on`() {
+        assertEquals(KnobDecision.PASS_THROUGH, knobDecision(351, isDown = true, enabled = true))
+    }
+
+    @Test fun `knob down while enabled sends play pause and is consumed`() {
+        assertEquals(
+            KnobDecision.CONSUME_AND_PLAY_PAUSE,
+            knobDecision(VOLUME_KNOB_PRESS_KEYCODE, isDown = true, enabled = true),
+        )
+    }
+
+    @Test fun `knob up while enabled is consumed without a second play pause`() {
+        assertEquals(
+            KnobDecision.CONSUME,
+            knobDecision(VOLUME_KNOB_PRESS_KEYCODE, isDown = false, enabled = true),
+        )
+    }
+
+    @Test fun `knob keycode is KEYCODE_AUTO_MEDIA_PLAY_PAUSE`() {
+        assertEquals(353, VOLUME_KNOB_PRESS_KEYCODE)
+    }
+
+    @Test fun `assigned key down fires the bound rules`() {
+        assertEquals(
+            SteeringKeyDecision.FIRE,
+            steeringKeyDecision(305, isDown = true, assigned = true),
+        )
+    }
+
+    @Test fun `assigned key up is consumed so the native action never fires`() {
+        assertEquals(
+            SteeringKeyDecision.CONSUME,
+            steeringKeyDecision(305, isDown = false, assigned = true),
+        )
+    }
+
+    @Test fun `unassigned key down passes through`() {
+        assertEquals(
+            SteeringKeyDecision.PASS_THROUGH,
+            steeringKeyDecision(305, isDown = true, assigned = false),
+        )
+    }
+
+    @Test fun `unassigned key up passes through`() {
+        assertEquals(
+            SteeringKeyDecision.PASS_THROUGH,
+            steeringKeyDecision(305, isDown = false, assigned = false),
+        )
+    }
 }

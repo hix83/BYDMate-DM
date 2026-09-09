@@ -11,12 +11,19 @@ import android.util.Log
  *  - field-wise merge: a partial update never wipes known values;
  *  - active expires 90 s after the last update of any source;
  *  - speed limit has its own 30 s freshness (a limit sign must not outlive its road);
+ *  - the maneuver has its own 30 s freshness (a passed turn must not outlive its balloon);
  *  - a successful Navigator-window read WITHOUT guidance widgets is an explicit
  *    "route ended" signal: 10 s of that deactivates the snapshot (markNoGuidance). */
 object NavGuidanceHub {
     private const val TAG = "NavGuidanceHub"
     const val ACTIVE_TIMEOUT_MS = 90_000L
     const val SPEED_LIMIT_TIMEOUT_MS = 30_000L
+    /** Maneuver freshness. The donor holds an a11y maneuver 10 s (20 s while a distance
+     *  is known) and then falls back to its SEPARATE notification-enum maneuver; here both
+     *  lanes write one merged field, and the notification lane refreshes maneuverGaodeMs
+     *  only when it parsed a maneuver AND a11y is not fresher - so the donor's window
+     *  would drop the arrow during an a11y blind spell. 30 s, same as the speed limit. */
+    const val MANEUVER_TIMEOUT_MS = 30_000L
     const val NO_GUIDANCE_DEACTIVATE_MS = 10_000L
     const val A11Y_PRIORITY_MS = 10_000L
 
@@ -93,6 +100,15 @@ object NavGuidanceHub {
             s = s.copy(speedLimit = 0)
             current = s
         }
+        // A maneuver is never overwritten by a "no maneuver" read (the field-wise merge
+        // keeps prev), so without an age limit a passed turn stays on the glass for the
+        // rest of the route. Icon goes with it: donor sends no f8 without a maneuver.
+        // Distance is NOT reset - the donor keeps counting it down in that state too.
+        if (s.maneuverGaode > 0 && nowMs - s.maneuverGaodeMs > MANEUVER_TIMEOUT_MS) {
+            s = s.copy(maneuverGaode = 0, maneuverPng = null)
+            current = s
+            Log.i(TAG, "maneuver expired: no maneuver read for ${MANEUVER_TIMEOUT_MS / 1000}s")
+        }
         return s
     }
 
@@ -125,6 +141,16 @@ object NavGuidanceHub {
      */
     @Synchronized
     fun updateFromNotification(rich: RichUpdate, nowMs: Long = System.currentTimeMillis()) {
+        // #170: the first player notification after Alice interrupts guidance often has
+        // no navigation payload at all (extras fallback returns an all-empty RichUpdate).
+        // Activating the hub on that carries no maneuver/distance, so displayDistance()
+        // clamps 0 up to its 11 m floor and the HUD flashes a bogus "11m". A truly empty
+        // update must be a no-op: leave active/lastUpdateMs/noGuidanceSinceMs untouched.
+        if (rich.maneuverGaode == 0 && rich.distanceMeters == 0 && rich.road.isEmpty() &&
+            rich.etaSeconds == 0 && rich.totalDistMeters == 0 && rich.cameraAlert.isEmpty()
+        ) {
+            return
+        }
         noGuidanceSinceMs = 0L
         val prev = current
         if (!prev.active) Log.i(TAG, "guidance active (source=NOTIFICATION)")

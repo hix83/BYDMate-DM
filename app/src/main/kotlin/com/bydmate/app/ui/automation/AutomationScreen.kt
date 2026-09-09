@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Gamepad
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Link
@@ -96,6 +97,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.bydmate.app.R
+import com.bydmate.app.cluster.ClusterProjectionManager
+import com.bydmate.app.cluster.DEFAULT_TRIGGER_KEYCODE
+import com.bydmate.app.cluster.DEFAULT_VOICE_KEYCODE
+import com.bydmate.app.cluster.VOLUME_KNOB_PRESS_KEYCODE
+import com.bydmate.app.cluster.knownButtonNameRes
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bydmate.app.data.automation.ScheduleSpec
 import com.bydmate.app.data.automation.minuteToHHmm
@@ -105,6 +111,7 @@ import com.bydmate.app.data.local.entity.RuleEntity
 import com.bydmate.app.data.local.entity.RuleLogEntity
 import com.bydmate.app.data.local.entity.TriggerDef
 import com.bydmate.app.ui.components.AppLaunchPickerDialog
+import com.bydmate.app.ui.settings.LearnButtonDialog
 import com.bydmate.app.ui.components.bydSwitchColors
 import com.bydmate.app.ui.theme.*
 import org.json.JSONArray
@@ -325,6 +332,17 @@ private fun RuleCard(
                                     append(summaryCtx.getString(R.string.automation_trigger_button_label, n))
                                 }
                             }
+                            "steering_key" -> {
+                                // Same rule as button_press: the label comes from the stored
+                                // keycode, so it follows the UI language.
+                                val code = t.value.toIntOrNull() ?: 0
+                                withStyle(SpanStyle(color = AccentBlue)) {
+                                    append(
+                                        if (code > 0) steeringKeyLabel(summaryCtx, code)
+                                        else summaryCtx.getString(R.string.automation_trigger_steering_key_unassigned)
+                                    )
+                                }
+                            }
                             else -> {
                                 withStyle(SpanStyle(color = AccentBlue)) { append(t.displayName.substringBefore(" ")) }
                                 append(" ")
@@ -495,6 +513,9 @@ private fun EditorDialog(
                             onAddButtonPress = {
                                 onUpdate { copy(triggers = triggers + newButtonPressTrigger(1)) }
                             },
+                            onAddSteeringKey = {
+                                onUpdate { copy(triggers = triggers + newSteeringKeyTrigger(0)) }
+                            },
                             onAddVoice = {
                                 onUpdate { copy(triggers = triggers + newVoiceTrigger(context)) }
                             },
@@ -593,7 +614,16 @@ private fun EditorDialog(
                             },
                             onAddCluster = {
                                 onUpdate { copy(actions = actions + newClusterAction(context)) }
-                            }
+                            },
+                            onAddSplitScreen = {
+                                onUpdate { copy(actions = actions + newSplitScreenAction(context)) }
+                            },
+                            onAddSplitScreenClose = {
+                                onUpdate { copy(actions = actions + newSplitScreenCloseAction(context)) }
+                            },
+                            onAddSplitScreenToggle = {
+                                onUpdate { copy(actions = actions + newSplitScreenToggleAction(context)) }
+                            },
                         )
                     }
 
@@ -602,10 +632,18 @@ private fun EditorDialog(
 
                     // Cooldown
                     SettingRow(stringResource(R.string.automation_setting_cooldown)) {
+                        // The field owns its text: binding it to cooldownSeconds.toString() made an
+                        // empty field unrepresentable, so Backspace on the last digit was reverted
+                        // and the caret jumped to the start (#163). Empty commits as 0.
+                        var cooldownText by remember(editing.id) {
+                            mutableStateOf(editing.cooldownSeconds.toString())
+                        }
                         OutlinedTextField(
-                            value = editing.cooldownSeconds.toString(),
+                            value = cooldownText,
                             onValueChange = { v ->
-                                v.toIntOrNull()?.let { sec -> onUpdate { copy(cooldownSeconds = sec) } }
+                                val digits = v.filter { it.isDigit() }
+                                cooldownText = digits
+                                onUpdate { copy(cooldownSeconds = digits.toIntOrNull() ?: 0) }
                             },
                             modifier = Modifier.width(70.dp),
                             colors = OutlinedTextFieldDefaults.colors(
@@ -733,18 +771,21 @@ private fun TriggerRow(
         Text("${index + 1}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextMuted,
             modifier = Modifier.width(16.dp))
 
-        when (trigger.kind) {
-            "place_enter", "place_exit" -> PlaceTriggerControls(trigger, places, onUpdate)
-            "time_of_day" -> TimeOfDayTriggerControls(trigger, onUpdate)
-            "time_range" -> ScheduleTriggerControls(trigger, onUpdate)
-            "service_start" -> ServiceStartTriggerControls()
-            "network_available" -> NetworkAvailableTriggerControls()
-            "button_press" -> ButtonPressTriggerControls(trigger, onUpdate)
-            "voice" -> VoiceTriggerControls(trigger, onUpdate)
-            else -> ParamTriggerControls(trigger, onUpdate)
+        // Bounded like ActionRow: wide controls (parameter + operator + value + unit) used to push
+        // the arrows and the delete button past the card edge (#165).
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            when (trigger.kind) {
+                "place_enter", "place_exit" -> PlaceTriggerControls(trigger, places, onUpdate)
+                "time_of_day" -> TimeOfDayTriggerControls(trigger, onUpdate)
+                "time_range" -> ScheduleTriggerControls(trigger, onUpdate)
+                "service_start" -> ServiceStartTriggerControls()
+                "network_available" -> NetworkAvailableTriggerControls()
+                "button_press" -> ButtonPressTriggerControls(trigger, onUpdate)
+                "steering_key" -> SteeringKeyTriggerControls(trigger, onUpdate)
+                "voice" -> VoiceTriggerControls(trigger, onUpdate)
+                else -> ParamTriggerControls(trigger, onUpdate)
+            }
         }
-
-        Spacer(Modifier.weight(1f))
 
         ReorderArrows(onMoveUp = onMoveUp, onMoveDown = onMoveDown)
         IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
@@ -1236,6 +1277,86 @@ private fun ButtonPressTriggerControls(
     }
 }
 
+@Composable
+private fun SteeringKeyTriggerControls(
+    trigger: TriggerDef,
+    onUpdate: (TriggerDef) -> Unit,
+) {
+    val context = LocalContext.current
+    Icon(
+        Icons.Outlined.Gamepad,
+        contentDescription = null,
+        tint = AccentGreen,
+        modifier = Modifier.size(16.dp),
+    )
+    Spacer(Modifier.width(6.dp))
+    Text(
+        stringResource(R.string.automation_trigger_steering_key_picker_label),
+        fontSize = 13.sp,
+        color = AccentGreen,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.width(6.dp))
+
+    var learning by remember { mutableStateOf(false) }
+    val code = trigger.value.toIntOrNull() ?: 0
+    Text(
+        if (code > 0) "${steeringKeyLabel(context, code)} ($code)"
+        else stringResource(R.string.automation_trigger_steering_key_assign),
+        fontSize = 13.sp, color = AccentGreen, fontWeight = FontWeight.Bold,
+        modifier = Modifier
+            .background(CardSurface, RoundedCornerShape(6.dp))
+            .border(1.dp, CardBorder, RoundedCornerShape(6.dp))
+            .clickable { learning = true }
+            .padding(8.dp, 6.dp),
+    )
+
+    if (learning) {
+        LearnButtonDialog(
+            onSave = { learned ->
+                onUpdate(trigger.copy(value = learned.toString(), displayName = "Клавиша $learned"))
+                learning = false
+            },
+            onDismiss = { learning = false },
+            occupiedReason = steeringKeyOccupiedReason(context),
+        )
+    }
+}
+
+/** Human label for a steering-wheel keycode, e.g. "Левая звезда" or "Кнопка (код 383)". */
+private fun steeringKeyLabel(context: Context, keyCode: Int): String {
+    val res = knownButtonNameRes(keyCode)
+    return if (res != 0) context.getString(res)
+    else context.getString(R.string.steering_button_unknown, keyCode)
+}
+
+/**
+ * Keys already owned by another BYDMate feature. SteeringWheelKeyService handles projection, the
+ * voice button and the volume knob BEFORE automation rules, so a rule bound to one of those keys
+ * would never fire — the learn dialog says so instead of saving a dead binding.
+ */
+private fun steeringKeyOccupiedReason(context: Context): (Int) -> String? {
+    val clusterPrefs = context.getSharedPreferences(ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
+    val voicePrefs = context.getSharedPreferences("voice", Context.MODE_PRIVATE)
+    return { keyCode ->
+        when {
+            clusterPrefs.getBoolean(ClusterProjectionManager.KEY_MIRROR_ENABLED, false) &&
+                keyCode == clusterPrefs.getInt(ClusterProjectionManager.KEY_TRIGGER_KEYCODE, DEFAULT_TRIGGER_KEYCODE) ->
+                context.getString(R.string.automation_steering_key_occupied_projection)
+
+            voicePrefs.getBoolean("voice_enabled", false) &&
+                keyCode == voicePrefs.getInt("voice_keycode", DEFAULT_VOICE_KEYCODE) ->
+                context.getString(R.string.automation_steering_key_occupied_voice)
+
+            clusterPrefs.getBoolean(ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE, false) &&
+                keyCode == VOLUME_KNOB_PRESS_KEYCODE ->
+                context.getString(R.string.automation_steering_key_occupied_knob)
+
+            else -> null
+        }
+    }
+}
+
 // --- Action Row ---
 
 @Composable
@@ -1289,6 +1410,10 @@ private fun ActionRow(
                 SpeakActionControls(action = action, onUpdate = onUpdate, modifier = Modifier.weight(1f))
             "agent_query" ->
                 AgentQueryActionControls(action = action, onUpdate = onUpdate, modifier = Modifier.weight(1f))
+            "split_screen" ->
+                SplitScreenActionControls(action = action, onUpdate = onUpdate, modifier = Modifier.weight(1f))
+            "split_screen_close", "split_screen_toggle" ->
+                SplitScreenStateActionControls(kind = action.kind, modifier = Modifier.weight(1f))
             else -> // "param" (default)
                 ParamActionControls(action = action, onUpdate = onUpdate, modifier = Modifier.weight(1f))
         }
@@ -1356,7 +1481,7 @@ private fun ParamActionControls(
 }
 
 // Delay option keys — labels are resolved at runtime via stringResource
-private val DELAY_OPTION_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 10000L)
+private val DELAY_OPTION_MS = listOf(500L, 1000L, 2000L, 3000L, 5000L, 10000L, 30000L, 60000L)
 
 @Composable
 private fun DelayActionControls(
@@ -1371,13 +1496,17 @@ private fun DelayActionControls(
     val label3s = stringResource(R.string.automation_delay_3s)
     val label5s = stringResource(R.string.automation_delay_5s)
     val label10s = stringResource(R.string.automation_delay_10s)
+    val label30s = stringResource(R.string.automation_delay_30s)
+    val label60s = stringResource(R.string.automation_delay_60s)
     val delayLabels = listOf(
         500L to label0_5s,
         1000L to label1s,
         2000L to label2s,
         3000L to label3s,
         5000L to label5s,
-        10000L to label10s
+        10000L to label10s,
+        30000L to label30s,
+        60000L to label60s
     )
     // Pre-build display names for onClick lambdas (stringResource cannot be called in non-Composable onClick)
     val delayDisplayNames = delayLabels.associate { (ms, lbl) ->
@@ -1832,7 +1961,10 @@ private fun AddActionButton(
     onAddHotspot: () -> Unit,
     onAddSpeak: () -> Unit,
     onAddAgentQuery: () -> Unit,
-    onAddCluster: () -> Unit
+    onAddCluster: () -> Unit,
+    onAddSplitScreen: () -> Unit,
+    onAddSplitScreenClose: () -> Unit,
+    onAddSplitScreenToggle: () -> Unit,
 ) {
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
@@ -1921,6 +2053,18 @@ private fun AddActionButton(
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.automation_action_cluster_projection), fontSize = 13.sp) },
                 onClick = { menuExpanded = false; onAddCluster() }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.automation_action_split_screen), fontSize = 13.sp) },
+                onClick = { menuExpanded = false; onAddSplitScreen() }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.automation_action_split_screen_close), fontSize = 13.sp) },
+                onClick = { menuExpanded = false; onAddSplitScreenClose() }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.automation_action_split_screen_toggle), fontSize = 13.sp) },
+                onClick = { menuExpanded = false; onAddSplitScreenToggle() }
             )
         }
     }
@@ -2279,6 +2423,239 @@ private fun AgentQueryEditDialog(
             }
         }
     )
+}
+
+// --- Split Screen Action Controls ---
+
+/**
+ * Compact preview row for the split_screen action.
+ * Tapping opens [SplitScreenEditDialog] with two [AppLaunchPickerDialog] pickers
+ * (reused from app_launch) and side-selection chips.
+ */
+@Composable
+private fun SplitScreenActionControls(
+    action: ActionDef,
+    onUpdate: (ActionDef) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var editing by remember { mutableStateOf(false) }
+    val narrowLabel = action.splitNarrowLabel()
+    val wideLabel = action.splitWideLabel()
+    val tapToConfigureLabel = stringResource(R.string.split_action_tap_to_configure)
+    val preview = if (narrowLabel.isNotBlank() && wideLabel.isNotBlank()) {
+        "$narrowLabel / $wideLabel"
+    } else tapToConfigureLabel
+
+    Row(
+        modifier = modifier
+            .background(CardSurface, RoundedCornerShape(6.dp))
+            .border(1.dp, CardBorder, RoundedCornerShape(6.dp))
+            .clickable { editing = true }
+            .padding(8.dp, 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Apps,
+            contentDescription = null,
+            tint = AccentTeal,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = preview,
+            fontSize = 13.sp,
+            color = if (narrowLabel.isBlank() || wideLabel.isBlank()) TextMuted else TextPrimary,
+            maxLines = 1,
+        )
+    }
+
+    if (editing) {
+        SplitScreenEditDialog(
+            initialNarrowPkg = action.splitNarrowPkg(),
+            initialNarrowLabel = narrowLabel,
+            initialWidePkg = action.splitWidePkg(),
+            initialWideLabel = wideLabel,
+            initialSide = action.splitSide(),
+            onDismiss = { editing = false },
+            onSave = { nPkg, nLabel, wPkg, wLabel, side ->
+                onUpdate(action.withSplitScreen(nPkg, nLabel, wPkg, wLabel, side))
+                editing = false
+            },
+        )
+    }
+}
+
+/**
+ * Row for the payload-less split kinds (close / toggle): nothing to configure,
+ * so it only names the action. Label comes from the kind, not from the stored
+ * displayName, so it follows an in-app language switch.
+ */
+@Composable
+private fun SplitScreenStateActionControls(kind: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .background(CardSurface, RoundedCornerShape(6.dp))
+            .border(1.dp, CardBorder, RoundedCornerShape(6.dp))
+            .padding(8.dp, 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Apps,
+            contentDescription = null,
+            tint = AccentTeal,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = stringResource(
+                if (kind == "split_screen_close") R.string.automation_action_split_screen_close
+                else R.string.automation_action_split_screen_toggle
+            ),
+            fontSize = 13.sp,
+            color = TextPrimary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun SplitScreenEditDialog(
+    initialNarrowPkg: String,
+    initialNarrowLabel: String,
+    initialWidePkg: String,
+    initialWideLabel: String,
+    initialSide: String,
+    onDismiss: () -> Unit,
+    onSave: (narrowPkg: String, narrowLabel: String, widePkg: String, wideLabel: String, side: String) -> Unit,
+) {
+    var narrowPkg by remember { mutableStateOf(initialNarrowPkg) }
+    var narrowLabel by remember { mutableStateOf(initialNarrowLabel) }
+    var widePkg by remember { mutableStateOf(initialWidePkg) }
+    var wideLabel by remember { mutableStateOf(initialWideLabel) }
+    var side by remember { mutableStateOf(initialSide.let { if (it in listOf("left", "right")) it else "right" }) }
+
+    // Controls which app picker is open (null = none, "narrow", "wide").
+    var openPicker by remember { mutableStateOf<String?>(null) }
+
+    val canSave = narrowPkg.isNotBlank() && widePkg.isNotBlank() && narrowPkg != widePkg
+
+    val sideLeftLabel = stringResource(R.string.split_action_side_left)
+    val sideRightLabel = stringResource(R.string.split_action_side_right)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CardSurface,
+        title = {
+            Text(
+                text = stringResource(R.string.automation_action_split_screen),
+                color = TextPrimary,
+                fontSize = 16.sp,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Narrow app picker row (1/3)
+                Column {
+                    Text(
+                        stringResource(R.string.split_action_narrow_label),
+                        fontSize = 12.sp,
+                        color = TextMuted,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = narrowLabel.ifBlank { stringResource(R.string.split_action_tap_to_configure) },
+                        fontSize = 13.sp,
+                        color = if (narrowLabel.isBlank()) TextMuted else TextPrimary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CardSurface, RoundedCornerShape(6.dp))
+                            .border(1.dp, CardBorder, RoundedCornerShape(6.dp))
+                            .clickable { openPicker = "narrow" }
+                            .padding(10.dp, 8.dp),
+                        maxLines = 1,
+                    )
+                }
+                // Wide app picker row (2/3)
+                Column {
+                    Text(
+                        stringResource(R.string.split_action_wide_label),
+                        fontSize = 12.sp,
+                        color = TextMuted,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = wideLabel.ifBlank { stringResource(R.string.split_action_tap_to_configure) },
+                        fontSize = 13.sp,
+                        color = if (wideLabel.isBlank()) TextMuted else TextPrimary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CardSurface, RoundedCornerShape(6.dp))
+                            .border(1.dp, CardBorder, RoundedCornerShape(6.dp))
+                            .clickable { openPicker = "wide" }
+                            .padding(10.dp, 8.dp),
+                        maxLines = 1,
+                    )
+                }
+                // Side selector chips
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = side == "right",
+                        onClick = { side = "right" },
+                        label = { Text(sideRightLabel, fontSize = 12.sp) },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = side == "left",
+                        onClick = { side = "left" },
+                        label = { Text(sideLeftLabel, fontSize = 12.sp) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (canSave) onSave(narrowPkg, narrowLabel, widePkg, wideLabel, side) },
+                enabled = canSave,
+            ) {
+                Text(
+                    stringResource(R.string.automation_save_button),
+                    color = if (canSave) AccentGreen else TextMuted,
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.automation_cancel_button), color = TextSecondary)
+            }
+        },
+    )
+
+    // App picker for narrow (1/3) pane — opened on demand.
+    if (openPicker == "narrow") {
+        AppLaunchPickerDialog(
+            currentPackage = narrowPkg,
+            showMinimizeToggle = false,
+            onDismiss = { openPicker = null },
+            onSelect = { pkg, label ->
+                narrowPkg = pkg
+                narrowLabel = label
+                openPicker = null
+            },
+        )
+    }
+    // App picker for wide (2/3) pane — opened on demand.
+    if (openPicker == "wide") {
+        AppLaunchPickerDialog(
+            currentPackage = widePkg,
+            showMinimizeToggle = false,
+            onDismiss = { openPicker = null },
+            onSelect = { pkg, label ->
+                widePkg = pkg
+                wideLabel = label
+                openPicker = null
+            },
+        )
+    }
 }
 
 // --- App Launch Action Controls ---
@@ -2909,6 +3286,7 @@ private fun AddTriggerButton(
     onAddServiceStart: () -> Unit,
     onAddNetworkAvailable: () -> Unit,
     onAddButtonPress: () -> Unit,
+    onAddSteeringKey: () -> Unit,
     onAddVoice: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -2981,6 +3359,13 @@ private fun AddTriggerButton(
                 onClick = {
                     menuExpanded = false
                     onAddButtonPress()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.automation_trigger_type_steering_key), fontSize = 13.sp) },
+                onClick = {
+                    menuExpanded = false
+                    onAddSteeringKey()
                 }
             )
             DropdownMenuItem(

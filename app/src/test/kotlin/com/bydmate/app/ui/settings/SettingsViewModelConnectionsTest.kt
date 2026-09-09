@@ -188,7 +188,7 @@ class SettingsViewModelConnectionsTest {
         override suspend fun isConnected(): Boolean = false
         override suspend fun exec(cmd: String): String? = null
         override suspend fun grantUsageStatsAppop(packageName: String): Boolean = false
-        override suspend fun spawnHelper(): Boolean = false
+        override suspend fun spawnHelper(token: String): Boolean = false
         override suspend fun killHelper(): Boolean = false
         override suspend fun readHelperLog(): String? = null
         override suspend fun helperHeartbeat(): Boolean = false
@@ -263,6 +263,17 @@ class SettingsViewModelConnectionsTest {
             placeRepository = mockk(relaxed = true),
             energyDataDeadDetector = mockk(relaxed = true),
             hudController = mockk(relaxed = true),
+            // Real recorder with an exec seam that would blow up: these tests never record.
+            logRecorder = com.bydmate.app.diagnostics.LogRecorder(ctx) {
+                throw UnsupportedOperationException("no logcat in tests")
+            },
+            fidSubscriptionManager = mockk(relaxed = true),
+            splitPreferences = mockk(relaxed = true),
+            splitSessionManager = mockk(relaxed = true),
+            splitJournal = com.bydmate.app.split.NoSplitJournal,
+            driverMemory = com.bydmate.app.agent.DriverMemory(
+                ctx.getSharedPreferences("voice", Context.MODE_PRIVATE)
+            ),
         )
     }
 

@@ -29,11 +29,15 @@ class EnergyDataDeadDetectorTest {
     }
 
     private var fileFp: Pair<Long, Long>? = 100L to 4096L
+    private var fileMtime: Long? = null
     private var nowMs = 0L
     private val store = FakeStore()
 
     private fun detector(clock: () -> Long = { nowMs }): EnergyDataDeadDetector {
-        val reader = mockk<EnergyDataReader> { every { sourceFingerprint() } answers { fileFp } }
+        val reader = mockk<EnergyDataReader> {
+            every { sourceFingerprint() } answers { fileFp }
+            every { sourceLastModifiedMs() } answers { fileMtime }
+        }
         return EnergyDataDeadDetector(reader, store, clock)
     }
 
@@ -44,6 +48,7 @@ class EnergyDataDeadDetectorTest {
     }
 
     private val hour = 60 * 60_000L
+    private val day = 24 * hour
 
     // Matrix case 3: dead leftover on DiLink 3 — three spaced driving sessions mark dead.
     @Test
@@ -210,6 +215,73 @@ class EnergyDataDeadDetectorTest {
         det.onTick(true, 0.0)
         det.onTick(true, 53000.0)
         assertFalse(store.pendingDriving())
+    }
+
+    // #148: energydata frozen since Nov 2025 on a driving car — the full streak keeps the trip
+    // list empty for days, so a months-old file shortens the verdict to two driving sessions.
+    @Test
+    fun `two driving sessions over a months-old file mark dead`() {
+        nowMs = 1_800_000_000_000L
+        fileMtime = nowMs - 270 * day
+        val d = detector()
+        d.session(1000.0, 1010.0)
+        d.onTick(true, 1010.0)                 // 1st anomaly: streak path, no verdict yet
+        assertFalse("one anomaly is never enough", d.isDead())
+        assertEquals(1, store.streakV)
+        d.onTick(false, 1020.0); nowMs += 5 * 60_000L
+        store.lastTs = nowMs                   // inside the spacing window: the age branch ignores it
+        d.onTick(true, 1020.0)                 // 2nd anomaly: age branch flips dead
+        assertTrue(d.isDead())
+    }
+
+    // The RTC can boot forward-jumped, and evaluate() runs before time sync — a single age
+    // reading must never be the whole verdict.
+    @Test
+    fun `an old mtime alone does not mark dead on the first anomaly`() {
+        nowMs = 1_800_000_000_000L
+        fileMtime = nowMs - 270 * day
+        val d = detector()
+        d.session(1000.0, 1010.0)
+        d.onTick(true, 1010.0)
+        assertFalse(d.isDead())
+        assertEquals(1, store.streakV)
+    }
+
+    @Test
+    fun `a file younger than the stale threshold keeps the streak behaviour`() {
+        nowMs = 1_800_000_000_000L
+        fileMtime = nowMs - 10 * day
+        val d = detector()
+        d.session(1000.0, 1010.0); nowMs += hour
+        d.onTick(true, 1010.0)
+        assertFalse(d.isDead())
+        assertEquals(1, store.streakV)
+    }
+
+    @Test
+    fun `unknown file mtime falls back to the streak path`() {
+        nowMs = 1_800_000_000_000L
+        fileMtime = null
+        val d = detector()
+        d.session(1000.0, 1010.0); nowMs += hour
+        d.onTick(true, 1010.0)
+        assertFalse(d.isDead())
+        assertEquals(1, store.streakV)
+    }
+
+    // The car appended a record between the sessions: alive wins over the old mtime, whatever
+    // the file timestamp claims (a stale mtime cannot outvote observed growth).
+    @Test
+    fun `an old mtime does not mark dead when the fingerprint changed`() {
+        nowMs = 1_800_000_000_000L
+        fileMtime = nowMs - 270 * day
+        val d = detector()
+        d.session(1000.0, 1010.0)
+        fileFp = 101L to 5000L
+        nowMs += hour
+        d.onTick(true, 1010.0)
+        assertFalse(d.isDead())
+        assertEquals(0, store.streakV)
     }
 
     @Test

@@ -15,12 +15,22 @@
     <string name="settings_section_widget_title">小组件</string>
     <string name="settings_section_display_title">显示</string>
     <!-- Settings: Display section (cluster projection) -->
+    <string name="settings_display_state_on">已开启</string>
+    <string name="settings_display_state_off">已关闭</string>
+    <string name="settings_display_card_mirror_title">投射到仪表盘</string>
+    <string name="settings_display_card_mirror_sub">方向盘按键调出导航。%1$s</string>
+    <string name="settings_display_card_mirror_sub_app">方向盘按键调出导航。%1$s，%2$s</string>
+    <string name="settings_display_card_hud_title">投射到挡风玻璃（HUD）</string>
+    <string name="settings_display_card_hud_sub">导航提示显示在原厂 HUD 上。%1$s</string>
+    <string name="settings_display_card_blindspot_sub">转向灯触发摄像头。%1$s</string>
+    <string name="settings_display_window_subhead">仪表盘窗口</string>
     <string name="settings_display_mirror_header">投射到仪表盘</string>
     <string name="settings_display_mirror_title">方向盘按键投射到仪表盘</string>
     <string name="settings_display_mirror_desc">短按所选方向盘按键，将所选应用投射到仪表盘或返回屏幕。</string>
     <string name="settings_cluster_auto_container_title">立即显示到仪表盘</string>
-    <string name="settings_cluster_auto_container_desc">自动将仪表盘切换到投屏模式</string>
+    <string name="settings_cluster_auto_container_desc">应用会自动将仪表盘切换到投屏模式并切回（导航和盲区摄像头）。如果之后仪表盘上的 ADAS 或原厂小部件消失且不会自行恢复，请关闭此项：此时请手动切换仪表盘模式，画面会显示在小地图中</string>
     <string name="settings_cluster_direct_reboot_hint">要让语音助手看到仪表盘上的导航，请将DiLink车机重启一次：长按音量旋钮即可重启。仅熄火并不能重启车机。重启之前投屏仍然可用，但语音助手看不到路线。</string>
+    <string name="cluster_direct_unsupported_hint">此车机固件不支持直连输出，已使用兼容模式</string>
     <string name="settings_projection_mode_title">投影模式</string>
     <string name="settings_projection_mode_direct">扩展</string>
     <string name="settings_projection_mode_vd">出厂</string>
@@ -41,6 +51,7 @@
     <string name="settings_display_offset_y_desc">窗口位置：0 - 顶部，50 - 居中，100 - 底部</string>
     <string name="settings_display_scale">缩放</string>
     <string name="settings_display_scale_desc">界面大小：数值越小，界面元素越小，地图显示越多</string>
+    <string name="settings_display_scale_direct_hint">缩放仅在“出厂”投屏模式下生效。“扩展”模式下应用始终按原始大小显示。</string>
     <string name="settings_section_places_title">地点</string>
     <string name="settings_section_application_title">应用</string>
     <string name="settings_smart_home_section_title">智能家居</string>
@@ -59,6 +70,23 @@
     <string name="settings_consumption_section_header">能耗阈值</string>
     <string name="settings_consumption_good_label">良好 &lt; (kWh/100km)</string>
     <string name="settings_consumption_bad_label">较差 &gt; (kWh/100km)</string>
+
+    <!-- Settings: Range calculation method (Auto = learned history, Manual = user table) -->
+    <string name="settings_range_calc_section_header">续航里程计算方式</string>
+    <string name="settings_range_calc_method_label">计算方法</string>
+    <string name="settings_range_calc_auto">自动</string>
+    <string name="settings_range_calc_manual">手动</string>
+    <string name="settings_range_calc_method_desc">“自动”：按行程历史和当前能耗计算。“手动”：按您自己的能耗表，随电池温度变化。</string>
+    <string name="settings_range_calc_edit_table_button">能耗表</string>
+    <string name="settings_range_calc_edit_table_desc">5 个点：电池温度 → 能耗（可选：100% 电量下的续航里程）</string>
+    <string name="range_table_dialog_title">按电池温度的能耗表</string>
+    <string name="range_table_dialog_note1">能耗（kWh/100km）为必填项；100% 电量下的续航里程为可选，但要么每一行都填，要么全部留空。</string>
+    <string name="range_table_dialog_col_temp">°C</string>
+    <string name="range_table_dialog_col_consumption">能耗 (kWh/100km)</string>
+    <string name="range_table_dialog_col_range">续航 (km)</string>
+    <string name="range_table_dialog_reset">恢复默认值</string>
+    <string name="range_table_dialog_cancel">取消</string>
+    <string name="range_table_dialog_save">保存</string>
 
     <!-- Settings: Recalculate confirmation dialog -->
     <string name="settings_recalc_dialog_title">重新计算费用？</string>
@@ -82,6 +110,16 @@
     <string name="settings_abrp_location_label">向 ABRP 发送坐标</string>
     <string name="settings_abrp_location_description">将车辆的 GPS 位置和航向加入遥测。默认关闭：DiLink 上的 ABRP 会自行读取位置。若 ABRP 中的车辆箭头落后于实际位置，可开启此项。</string>
     <string name="settings_abrp_save_button">保存 ABRP</string>
+    <string name="settings_webhook_section_header">Webhook - 遥测</string>
+    <string name="settings_webhook_label">实时数据 -> 自己的服务器</string>
+    <string name="settings_webhook_description">与发送至 ABRP 相同的 JSON（SOC、功率、温度、里程表、胎压、充电）通过 POST 请求发送到您的 URL：行驶时每秒一次，充电时每 8 秒一次，停车时每 30 秒一次。默认不发送坐标。</string>
+    <string name="settings_webhook_url_label">URL（https://）</string>
+    <string name="settings_webhook_secret_label">密钥（Authorization: Bearer 请求头），可选</string>
+    <string name="settings_webhook_location_label">向 Webhook 发送坐标</string>
+    <string name="settings_webhook_location_description">将车辆的 GPS 位置和航向加入 JSON。</string>
+    <string name="settings_webhook_save_button">保存 Webhook</string>
+    <string name="settings_webhook_saved">Webhook 已保存</string>
+    <string name="settings_webhook_invalid_url">URL 无效</string>
     <string name="settings_openrouter_section_header">OpenRouter</string>
     <string name="settings_openrouter_api_key_label">OpenRouter API 密钥</string>
     <string name="settings_openrouter_model_selected">模型：%1$s</string>
@@ -100,6 +138,10 @@
     <string name="settings_widget_hints">• 长按小组件 - 隐藏至下次打开 BYDMate。\n• 拖到底部垃圾桶 - 完全关闭。\n• 普通点击 - 打开 BYDMate。</string>
     <string name="settings_widget_hide_youtube_label">YouTube 时隐藏</string>
     <string name="settings_widget_hide_youtube_description">YouTube 在屏幕上时按钮面板自动隐藏</string>
+    <string name="settings_widget_hide_apps_label">在应用中隐藏</string>
+    <string name="settings_widget_hide_apps_description">所选应用在屏幕上时按钮面板自动隐藏</string>
+    <string name="settings_widget_hide_apps_none">未选择</string>
+    <string name="settings_widget_hide_apps_count">已选择：%1$d</string>
     <string name="settings_widget_reset_position_button">重置位置</string>
     <string name="settings_reset_seat_channel">重置座椅通道</string>
     <string name="settings_reset_seat_channel_hint">更换车辆后座椅加热或通风失效时使用</string>
@@ -109,7 +151,7 @@
     <string name="orb_agent">助手：</string>
     <string name="settings_voice_native_assistant_header">BYD 原车语音助手</string>
     <string name="settings_voice_disable_native_label">关闭原车语音助手</string>
-    <string name="settings_voice_disable_native_description">隐藏 BYD 内置语音助手，避免其打断。可恢复。</string>
+    <string name="settings_voice_disable_native_description">隐藏 BYD 内置语音助手，避免其打断。快捷指令应用会随之消失，它是语音助手的一部分。可恢复：关闭此开关并重启车机，两者都会回来。</string>
     <string name="settings_voice_native_assistant_reboot_note">重启车机后生效。</string>
     <string name="settings_widget_opacity_label">不透明度</string>
     <string name="settings_widget_scale_label">大小</string>
@@ -321,6 +363,13 @@
     <string name="automation_trigger_type_button_press">按钮按下</string>
     <string name="automation_trigger_button_label">按钮 %1$d</string>
     <string name="automation_trigger_button_picker_label">按钮</string>
+    <string name="automation_trigger_type_steering_key">方向盘按键</string>
+    <string name="automation_trigger_steering_key_picker_label">方向盘按键</string>
+    <string name="automation_trigger_steering_key_unassigned">未分配按键</string>
+    <string name="automation_trigger_steering_key_assign">分配</string>
+    <string name="automation_steering_key_occupied_projection">该按键用于开启仪表盘导航。请在设置的显示部分释放该按键，或选择其他按键。</string>
+    <string name="automation_steering_key_occupied_voice">该按键用于呼出 BYDMate 语音助手。请在设置的语音智能体部分更改按键，或选择其他按键。</string>
+    <string name="automation_steering_key_occupied_knob">旋钮按下已被播放/暂停功能占用。请在设置的显示部分关闭该功能，或选择其他按键。</string>
     <string name="automation_trigger_type_voice">语音</string>
     <string name="automation_trigger_voice_phrase_label">触发短语</string>
     <string name="automation_voice_phrase_empty">语音短语为空</string>
@@ -351,6 +400,8 @@
     <string name="automation_delay_3s">3 秒</string>
     <string name="automation_delay_5s">5 秒</string>
     <string name="automation_delay_10s">10 秒</string>
+    <string name="automation_delay_30s">30 秒</string>
+    <string name="automation_delay_60s">1 分钟</string>
     <string name="automation_delay_display_name">延迟 %1$s</string>
 
     <!-- Add action button -->
@@ -574,13 +625,9 @@
     <!-- SOC ring: charging icon content description -->
     <string name="battery_health_charging_cd">充电中</string>
 
-    <!-- Battery health dialog -->
-    <string name="battery_health_dialog_title">电池健康</string>
-    <string name="battery_health_now_header">当前（车辆实时数据）</string>
-    <string name="battery_health_lifetime_header">全生命周期（系统数据）</string>
+    <!-- Battery readings shared by the compact card and the tech panel -->
     <string name="battery_health_cell_delta_label">电芯压差</string>
     <string name="battery_health_cell_delta_value">%1$.3f V</string>
-    <string name="battery_health_banks_header">电池组</string>
     <string name="battery_health_cell_voltage_value">%1$.3f V</string>
     <string name="battery_health_bat_temp_label">电池温度</string>
     <string name="battery_health_12v_label">车载电源</string>
@@ -589,9 +636,6 @@
     <string name="battery_health_bms_mileage_value">%1$.1f 公里</string>
     <string name="battery_health_pumped_label">累计充入</string>
     <string name="battery_health_pumped_value">%1$.0f kWh</string>
-    <string name="battery_health_disabled_title">系统数据已禁用</string>
-    <string name="battery_health_disabled_hint">在设置中启用"系统数据"，以查看 SoH、BMS 里程和车辆累计充入量。</string>
-    <string name="battery_health_avg_soc_header">平均SOC（BYDMate历史）</string>
     <string name="battery_health_avg_since_charge_label">自上次充电</string>
     <string name="battery_health_avg_all_time_label">全部时间</string>
     <string name="battery_health_avg_soc_hint" formatted="false">按时间加权的平均电量：电池保持高电量的时间越长，该值越高。比亚迪LFP电池长期高电量存放会加速日历老化，建议保持较低水平。参考：65%以下很好，65-85%正常，高于85%建议推迟或减少充电。每1-2周仍需充满一次以平衡电芯。根据BYDMate行程和充电历史计算。</string>
@@ -632,7 +676,7 @@
     <string name="update_downloading_paused">已暂停...</string>
     <string name="update_download_error">下载错误（代码 %1$d）</string>
     <string name="update_download_notification_description">BYDMate 更新</string>
-    <string name="update_downloading_start">下载中：0%%</string>
+    <string name="update_downloading_start" formatted="false">下载中：0%</string>
 
     <!-- Charges: day group labels -->
     <string name="charges_day_today">今天（%1$s）</string>
@@ -735,6 +779,15 @@
     <string name="automation_action_media_volume_label">音量</string>
     <string name="learn_button_again">重新学习</string>
     <string name="learn_button_cancel">取消</string>
+    <!-- Volume knob on the steering wheel: play/pause instead of audio-source switch -->
+    <string name="settings_knob_play_pause_title">方向盘音量旋钮</string>
+    <string name="settings_knob_play_pause_desc">按下旋钮暂停和继续播放，而不是切换音源。固件更新后按下变为切换音源时需要开启。</string>
+    <!-- Car system section: BYD head unit settings, not app settings -->
+    <string name="settings_car_system_header">车机系统</string>
+    <string name="settings_car_language_title">车机界面语言</string>
+    <string name="settings_car_language_desc">仅适用于 UI7 固件。按钮会打开比亚迪隐藏的原厂语言对话框，其中有完整语言列表。切换到俄语：选择“Русский язык”，然后点 OK。切回来：同一个按钮，选择“English”，点 OK。注意：部分车主在俄语下自动泊车会失效。如果您使用自动泊车，请保留 English。</string>
+    <string name="settings_car_language_button">打开语言选择</string>
+    <string name="settings_car_language_unavailable">此固件不支持语言选择对话框</string>
     <string name="learn_button_captured">已识别按键：</string>
     <string name="learn_button_dialog_title">分配按键</string>
     <string name="learn_button_rejected">无法分配此按键，请按其他按键。</string>
@@ -751,6 +804,15 @@
     <string name="settings_config_export_confirm_title">导出配置？</string>
     <string name="settings_config_export_confirm_body">备份包含带 GPS 路线的行程历史以及未加密的 API 密钥。文件将保存到公共 Download 文件夹。请妥善保管，不要转发给他人。</string>
     <string name="settings_config_export_confirm_ok">导出</string>
+    <!-- Fid catalog dump (Task O) -->
+    <string name="settings_fid_dump_button">保存 fid 目录</string>
+    <string name="settings_fid_dump_desc">SDK 常量的名称和数值。仅技术标识符：不含 VIN，不含定位，不含个人数据</string>
+    <string name="settings_fid_dump_saved">已保存：%1$s</string>
+    <string name="settings_fid_dump_in_progress">正在读取 fid...</string>
+    <string name="settings_fid_dump_empty">此固件上的 fid 目录为空</string>
+    <string name="settings_fid_dump_error_unavailable">守护进程不可用</string>
+    <!-- %1$s = short technical detail, e.g. "status=-1 at chunk 0" or "transact failed at chunk 2" -->
+    <string name="settings_fid_dump_error_read">读取错误：%1$s</string>
     <string name="settings_display_button_change">更改</string>
     <string name="settings_display_button_title">触发按键</string>
     <string name="steering_button_aux_left">左侧辅助键</string>
@@ -796,6 +858,7 @@
     <string name="auto_enum_code_n">N</string>
     <string name="auto_enum_code_normal">NORMAL</string>
     <string name="auto_enum_code_off">OFF</string>
+    <string name="auto_enum_code_offroad">OFF-ROAD</string>
     <string name="auto_enum_code_on">ON</string>
     <string name="auto_enum_code_p">P</string>
     <string name="auto_enum_code_r">R</string>
@@ -813,6 +876,10 @@
     <string name="auto_enum_open_f">打开</string>
     <string name="auto_enum_open_m">打开</string>
     <string name="auto_enum_recirc">内循环</string>
+    <string name="auto_enum_turn_off">关闭</string>
+    <string name="auto_enum_turn_left">左转</string>
+    <string name="auto_enum_turn_right">右转</string>
+    <string name="auto_enum_turn_hazard">双闪</string>
     <string name="auto_enum_unfastened">未系</string>
     <string name="auto_enum_unlocked">已解锁</string>
     <!-- trigger param names -->
@@ -860,6 +927,7 @@
     <string name="auto_param_rain">雨量</string>
     <string name="auto_param_lightlow">近光灯</string>
     <string name="auto_param_drl">日行灯</string>
+    <string name="auto_param_turnsignal">转向灯</string>
     <!-- action names -->
     <string name="auto_act_vent_windows">车窗通风</string>
     <string name="auto_act_close_all_windows">关闭所有车窗</string>
@@ -924,6 +992,8 @@
     <string name="auto_act_ambient_light_off">氛围灯关</string>
     <string name="auto_act_drl_on">日行灯开</string>
     <string name="auto_act_drl_off">日行灯关</string>
+    <string name="auto_act_hazard_on">打开双闪</string>
+    <string name="auto_act_hazard_off">关闭双闪</string>
     <string name="auto_act_interior_light_on">车内灯开</string>
     <string name="auto_act_interior_light_off">车内灯关</string>
     <string name="auto_act_lock_doors">车门上锁</string>
@@ -1005,6 +1075,15 @@
     <string name="auto_a11y_move_up">上移</string>
     <string name="auto_a11y_move_down">下移</string>
     <string name="auto_a11y_run_now">立即执行</string>
+    <!-- safety gate block reasons (ActionDispatcher.BlockReason) -->
+    <string name="gate_speed_unknown">车速未知</string>
+    <string name="gate_sunroof_speed">车速 %1$d 公里/小时（&gt;80），禁止打开天窗</string>
+    <string name="gate_windows_speed">车速 %1$d 公里/小时（&gt;120），禁止打开车窗</string>
+    <string name="gate_unlock_speed_unknown">车速未知，不解锁车门</string>
+    <string name="gate_unlock_speed">车速 %1$d 公里/小时（&gt;30），禁止解锁车门</string>
+    <string name="gate_forbidden_command">禁止的命令</string>
+    <string name="gate_frunk_speed_unknown">车速未知，无法打开前备箱</string>
+    <string name="gate_frunk_moving">前备箱仅在停车时可打开（车速 %1$d 公里/小时）</string>
 
     <!-- Voice control (Phase 0) -->
     <string name="settings_section_voice_agent">语音智能体</string>
@@ -1016,6 +1095,7 @@
     <string name="voice_thinking">思考中</string>
     <string name="voice_error_model_missing">语音模型尚未下载。请在设置的语音助手部分下载。</string>
     <string name="voice_error_lang_not_ru">语音命令目前仅支持俄语。请在设置中将语音语言设为俄语。</string>
+    <string name="voice_block_park_required">需要挂入 P 挡</string>
 
     <!-- GigaAM v3: free-form Russian speech recognition (offline) -->
     <string name="settings_asr_gigaam_title">语音识别</string>
@@ -1096,6 +1176,10 @@
     <string name="settings_agent_gender_male">男声</string>
     <string name="settings_agent_gender_female">女声</string>
     <string name="settings_agent_gender_hint">对所有语音生效：每种音色都有男声和女声版本</string>
+    <string name="settings_agent_memory_title">驾驶员记忆</string>
+    <string name="settings_agent_memory_hint">当你告诉智能体时，它会记住你的名字和长期偏好。说“忘记……”即可删除某一条</string>
+    <string name="settings_agent_memory_empty">暂无记忆内容</string>
+    <string name="settings_agent_memory_forget_all">全部忘记</string>
 
     <!-- Voice agent (Phase 1) -->
     <string name="agent_enable_title">语音AI助手</string>
@@ -1124,6 +1208,9 @@
     <string name="settings_conn_checking">检查中…</string>
     <string name="settings_zai_hint">免费 glm-4.7-flash，推荐设为主模型</string>
     <string name="settings_custom_hint">任何兼容 OpenAI 的 API。预设会填入地址和模型，密钥需自备。</string>
+    <string name="settings_custom_extra_json_label">附加请求参数 (JSON)</string>
+    <string name="settings_custom_extra_json_hint">会加入发送到该服务器的每个请求，例如 {\"thinking\": false} 可关闭推理</string>
+    <string name="settings_custom_extra_json_invalid">JSON 格式无效</string>
     <string name="settings_custom_list_models">模型列表</string>
     <string name="settings_error_dns">服务器不可达：车机网络无法解析该地址 (DNS)</string>
     <string name="settings_error_timeout">服务器未在规定时间内响应</string>
@@ -1154,6 +1241,8 @@
     <string name="settings_widget_reset_position_desc">将小部件恢复到默认位置</string>
     <string name="settings_export_csv_desc">全部行程历史导出为一个文件，保存到 Download 文件夹</string>
     <string name="settings_log_recording_desc">用于排查问题的详细日志，请在开发者要求时开启</string>
+    <string name="settings_quiet_notification_title">安静的通知</string>
+    <string name="settings_quiet_notification_desc">BYDMate 通知移至折叠的静默列表，状态栏不显示图标。无法完全移除：Android 要求后台运行必须有通知</string>
     <string name="settings_config_export_desc">备份：包含 GPS 的行程历史和明文 API 密钥，文件保存在 Download 文件夹</string>
     <string name="settings_config_restore_desc">当前数据和设置将被备份内容完全替换</string>
     <string name="settings_autostart_header">自启动</string>
@@ -1191,6 +1280,134 @@
     <string name="settings_hud_status_on">正在向 HUD 传输</string>
     <string name="settings_hud_status_bind_failed">无法连接 SOME/IP 总线</string>
     <string name="settings_hud_hint">需要配备抬头显示的车型。数据来自 Yandex 导航窗口</string>
+    <!-- Blind-spot cameras -->
+    <string name="settings_blindspot_header">盲区</string>
+    <string name="settings_blindspot_title">转向灯触发摄像头</string>
+    <string name="settings_blindspot_desc">左转向灯 - 仪表盘显示左侧摄像头，右转向灯 - 主屏幕上显示小窗。默认关闭。</string>
+    <string name="settings_blindspot_threshold_title">速度阈值</string>
+    <string name="settings_blindspot_threshold_desc">低于该速度时不显示摄像头</string>
+    <string name="settings_blindspot_pip_width_title">小窗宽度</string>
+    <string name="settings_blindspot_pip_width_desc">主屏幕小窗的宽度，占屏幕宽度的百分比</string>
+    <string name="settings_blindspot_position_title">小窗位置</string>
+    <string name="settings_blindspot_position_desc">在屏幕上显示一个空白小窗：用手指把它拖到摄像头应该出现的位置</string>
+    <string name="settings_blindspot_position_button">调整位置</string>
+    <string name="settings_blindspot_position_done">完成</string>
+    <string name="settings_blindspot_position_drag">拖动小窗</string>
+    <string name="settings_blindspot_both_main_title">两侧摄像头都显示在主屏</string>
+    <string name="settings_blindspot_both_main_desc">左侧摄像头与右侧一起显示在中控屏上，不使用仪表盘</string>
+    <string name="settings_blindspot_glow_title">盲区有车时高亮</string>
+    <string name="settings_blindspot_glow_desc">传感器检测到旁边有车时，窗口周围显示橙色边框</string>
+    <string name="settings_blindspot_hint">需要配备全景影像的车型。如果无法投射到仪表盘，小窗会在主屏幕上工作。</string>
     <string name="settings_secret_show">显示密钥</string>
     <string name="settings_secret_hide">隐藏密钥</string>
+
+    <!-- Split-screen pill menu -->
+    <string name="split_menu_mirror">切换位置</string>
+    <string name="split_menu_swap">交换应用</string>
+    <string name="split_menu_pick_left">左侧应用…</string>
+    <string name="split_menu_pick_right">右侧应用…</string>
+    <string name="split_menu_exit">退出</string>
+    <string name="split_picker_title_change">选择应用</string>
+    <string name="split_picker_title_left">选择左侧分屏的应用</string>
+    <string name="split_picker_title_right">选择右侧分屏的应用</string>
+    <string name="split_picker_title_wide">选择宽屏区域 (2/3) 的应用</string>
+    <string name="split_picker_title_narrow">选择窄屏区域 (1/3) 的应用</string>
+    <string name="split_freeform_reboot_hint">重启车机后将启用分屏</string>
+    <string name="split_freeform_unsupported_hint">此车机固件不支持分屏</string>
+    <string name="split_launch_failed">启动分屏失败</string>
+    <string name="split_launch_failed_adb">启动分屏失败：需要已解锁的 ADB</string>
+    <!-- Automation action: split_screen -->
+    <string name="automation_action_split_screen">分屏</string>
+    <string name="auto_act_split_screen">分屏</string>
+    <!-- Automation actions: split_screen_close / split_screen_toggle (no payload) -->
+    <string name="automation_action_split_screen_close">关闭分屏</string>
+    <string name="auto_act_split_screen_close">关闭分屏</string>
+    <string name="automation_action_split_screen_toggle">切换分屏</string>
+    <string name="auto_act_split_screen_toggle">切换分屏</string>
+    <string name="split_action_narrow_label">1/3 应用</string>
+    <string name="split_action_wide_label">2/3 应用</string>
+    <string name="split_action_side_left">1/3 在左</string>
+    <string name="split_action_side_right">1/3 在右</string>
+    <string name="split_action_tap_to_configure">选择应用</string>
+    <string name="auto_msg_split_narrow_empty">操作 #%1$d：未选择 1/3 应用</string>
+    <string name="auto_msg_split_wide_empty">操作 #%1$d：未选择 2/3 应用</string>
+    <string name="auto_msg_split_same_package">操作 #%1$d：两个应用必须不同</string>
+    <string name="auto_msg_split_invalid_side">操作 #%1$d：方向须为 left 或 right</string>
+    <string name="settings_widget_left_tap_mode_label">左侧点击操作</string>
+    <string name="settings_widget_left_tap_mode_app">启动应用</string>
+    <string name="settings_widget_left_tap_mode_split">启动分屏</string>
+    <!-- Split-screen settings section -->
+    <string name="settings_section_split_title">分屏</string>
+    <string name="settings_split_enable_title">分屏 1/3 + 2/3</string>
+    <string name="settings_split_enable_desc">两个自由窗口：一个占三分之一，另一个占三分之二。默认关闭。</string>
+    <string name="settings_split_clear_pair_title">重置上次应用对</string>
+    <string name="settings_split_clear_pair_desc">清除保存的应用对，下次启动时将打开选择器。</string>
+    <string name="settings_split_pair_cleared">应用对已重置</string>
+    <string name="settings_split_wide_app_title">宽屏区域 (2/3)</string>
+    <string name="settings_split_narrow_app_title">窄屏区域 (1/3)</string>
+    <string name="settings_split_app_not_selected">未选择</string>
+    <string name="settings_split_howto_body">打开分屏有三种方式。\n最简单的一种：点击悬浮小组件左侧三分之一的区域。先在“点击小组件”里开启“点击区域”，再把“左侧点击操作”设为“启动分屏”。\n用自动化：在规则里添加“分屏”动作，旁边还有“关闭分屏”和“切换分屏”。\n用语音：直接让语音智能体打开分屏就行。</string>
+    <string name="settings_split_mechanism_title">分屏方式</string>
+    <string name="settings_split_mechanism_freeform">BYDMate 窗口</string>
+    <string name="settings_split_mechanism_native">系统分屏</string>
+    <string name="settings_split_mechanism_native_hint">分屏由车机固件完成。显示效果取决于固件：可能是 1/3 和 2/3 两个窗口，也可能是左右对半并在屏幕上选择第二个应用。</string>
+    <string name="settings_split_mechanism_platformized_hint">在该固件上由车机自己分屏：1/3 和 2/3 两个窗口、分隔条和左右交换手势都是原生的。BYDMate 只负责启动所选的应用组合，并把跑出去的应用送回它的窗口。</string>
+    <string name="settings_split_try_native_hint">试试“系统分屏”方式。</string>
+    <string name="split_feature_disabled">分屏功能已在设置中关闭</string>
+    <!-- Tech panel: compact card cell + full screen -->
+    <string name="dashboard_battery_insulation_label">绝缘</string>
+    <string name="tech_title">技术</string>
+    <string name="tech_status_online">autoservice 在线</string>
+    <string name="tech_status_offline">autoservice 离线</string>
+    <string name="tech_no_data">车辆未提供这些数据</string>
+    <string name="tech_card_battery_now">电池 · 当前</string>
+    <string name="tech_card_limits">BMS 限值</string>
+    <string name="tech_card_cells">电芯</string>
+    <string name="tech_card_motors">电机与逆变器</string>
+    <string name="tech_card_climate">空调</string>
+    <string name="tech_card_tyres">轮胎 · 胎压 / 温度</string>
+    <string name="tech_card_history">电池 · 历史</string>
+    <string name="tech_label_hv_voltage">高压电压</string>
+    <string name="tech_label_power">功率</string>
+    <string name="tech_label_battery_power">电池功率</string>
+    <string name="tech_label_max_charge">最大充电功率</string>
+    <string name="tech_label_max_discharge">电池可用功率</string>
+    <string name="tech_label_motor_temp">电机温度</string>
+    <string name="tech_label_inverter_temp">逆变器温度</string>
+    <string name="tech_label_rpm">转速 rpm</string>
+    <string name="tech_label_pedals">油门 / 刹车踏板</string>
+    <string name="tech_label_front">前</string>
+    <string name="tech_label_rear">后</string>
+    <string name="tech_label_compressor">压缩机</string>
+    <string name="tech_label_climate">空调</string>
+    <string name="tech_label_inside_outside">车内 / 车外</string>
+    <string name="tech_on">开</string>
+    <string name="tech_off">关</string>
+    <string name="tech_tyre_fl">左前</string>
+    <string name="tech_tyre_fr">右前</string>
+    <string name="tech_tyre_rl">左后</string>
+    <string name="tech_tyre_rr">右后</string>
+    <string name="tech_value_mohm">%1$.1f MΩ</string>
+    <string name="tech_value_mv">%1$d mV</string>
+    <string name="tech_value_volt">%1$d V</string>
+    <string name="tech_value_kw">%1$d kW</string>
+    <string name="tech_value_watt">%1$d W</string>
+    <string name="tech_value_percent_per_hour">%1$.2f %%/小时</string>
+    <string name="tech_value_deg">%1$d°</string>
+    <string name="tech_value_temp">%1$d°C</string>
+    <string name="tech_value_percent">%1$d%%</string>
+    <string name="tech_value_tyre">%1$.2f bar · %2$d°</string>
+    <string name="tech_value_tyre_pressure">%1$.2f bar</string>
+    <string name="tech_value_cell_scale">%1$.2f V</string>
+    <string name="tech_hint_soh" formatted="false">电池健康度：相比新电池还剩多少容量。新车为 100%，随着年份缓慢下降。该数值由车辆自己计算。</string>
+    <string name="tech_hint_hv_voltage">动力电池的电压。充电时升高，放电时降低，这台车大约在 450…560 V。单看意义不大，结合功率一起看才有用。</string>
+    <string name="tech_hint_motor_power">此刻电机的功率：车辆向车轮输出多少动力，或在能量回收时从车轮回收多少。停车时为 0。该数值由车辆自己计算。</string>
+    <string name="tech_hint_power">电池此刻输出多少能量。正值：车辆在消耗（加速、空调）。负值：电池在吸收能量，可能是制动能量回收，也可能是在充电桩充电。第二个数值：电量下降的速度，每小时百分比。停车时代表车载电子设备的耗电。</string>
+    <string name="tech_hint_12v">为电子设备供电的普通 12 伏蓄电池电压。车辆启动时为 13…14,5 V。停车时低于 12 V，说明蓄电池在变弱。</string>
+    <string name="tech_hint_insulation">高压电池与车身之间的绝缘电阻。数值越大越好：正常为几兆欧。若降到 0,5 MΩ 及以下，说明某处绝缘受损，该去维修了。</string>
+    <string name="tech_hint_bms_limits">电池控制器此刻允许的上限：充电时能吸收多少（充电桩可能给得更少），以及加速时能输出多少。电池偏冷或接近充满时两个数值都更低：所以冬天充电更慢、能量回收更弱。</string>
+    <string name="tech_hint_cells">电池由数百个电芯组成。这里显示最弱的、最强的以及两者之差。差值在 20…30 mV 以内属正常。长期差值偏大，说明某个电芯老化得比其他更快。</string>
+    <string name="tech_hint_motors">电机及其驱动逆变器的温度。日常行驶在 60…80° 以内。长时间加速或拖挂时温度更高，车辆会自行降低功率直到冷却。</string>
+    <string name="tech_hint_compressor">空调与热泵压缩机消耗多少瓦。它是除电机之外的主要用电设备：夏天酷热、冬天严寒时会明显缩短续航。</string>
+    <string name="tech_hint_tyres">来自胎压传感器的每个车轮的压力和温度。行驶中轮胎升温后压力会升高 0,2…0,3 bar，属于正常。若某个车轮明显低于其他，请检查是否漏气。</string>
 </resources>

@@ -3,6 +3,8 @@ package com.bydmate.app.ui.settings
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.FileProvider
 import android.os.Environment
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
@@ -25,6 +27,7 @@ import com.bydmate.app.data.local.dao.IdleDrainDao
 import com.bydmate.app.data.local.dao.TripPointDao
 import com.bydmate.app.data.parking.ParkingCamera
 import com.bydmate.app.data.parking.ParkingCameraConfig
+import com.bydmate.app.diagnostics.LogRecorder
 import com.bydmate.app.data.remote.InsightsManager
 import com.bydmate.app.data.remote.LlmHttpException
 import com.bydmate.app.data.remote.OpenRouterClient
@@ -35,9 +38,12 @@ import com.bydmate.app.data.repository.PlaceRepository
 import com.bydmate.app.data.repository.SettingsRepository
 import com.bydmate.app.data.repository.TripRepository
 import com.bydmate.app.domain.calculator.TripCostCalculator
+import com.bydmate.app.service.TrackingService
 import com.bydmate.app.service.UpdateChecker
 import com.bydmate.app.util.CrashLog
+import com.bydmate.app.util.appLocalizedContext
 import com.bydmate.app.R
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,11 +56,14 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import com.bydmate.app.data.vehicle.DumpFidsResult
 import com.bydmate.app.data.vehicle.SeatChannel
 import com.bydmate.app.data.vehicle.SeatChannelStore
 import com.bydmate.app.service.BootReceiver
@@ -102,6 +111,9 @@ data class SettingsUiState(
     val tripCostTariff: String = "home",
     val consumptionGood: String = SettingsRepository.DEFAULT_CONSUMPTION_GOOD,
     val consumptionBad: String = SettingsRepository.DEFAULT_CONSUMPTION_BAD,
+    val rangeCalcMethod: String = SettingsRepository.DEFAULT_RANGE_CALC_METHOD,
+    val manualRangeTable: List<SettingsRepository.ManualRangePoint> = SettingsRepository.defaultManualRangeTable(),
+    val showManualRangeTableDialog: Boolean = false,
     val lastBootInfo: String? = null,
     val chainLog: String? = null,
     val openRouterApiKey: String = "",
@@ -137,8 +149,15 @@ data class SettingsUiState(
     val parkingCameraUrl: String = SettingsRepository.DEFAULT_PARKING_CAMERA_URL,
     val parkingCameras: List<ParkingCamera> = listOf(ParkingCameraConfig.defaultCamera(SettingsRepository.DEFAULT_PARKING_CAMERA_URL)),
     val parkingCameraSaveStatus: String? = null,
+    val webhookEnabled: Boolean = false,
+    val webhookUrl: String = "",
+    val webhookSecret: String = "",
+    val webhookSendLocation: Boolean = false,
+    val webhookSaveStatus: String? = null,
     /** Status of the last config backup/restore operation. Red if starts with error prefix. */
     val configStatus: String? = null,
+    /** Status of the last fid-catalog dump. Null = idle. Red if starts with error prefix. */
+    val fidDumpStatus: String? = null,
     val mapTileSource: String = SettingsRepository.DEFAULT_MAP_TILE_SOURCE,
     // Voice settings
     val voiceEnabled: Boolean = false,
@@ -175,12 +194,16 @@ data class SettingsUiState(
     val agentName: String = "",
     val agentPersona: String = AgentPersona.NAVIGATOR.id,
     val agentGender: String = "m",
+    /** Long-term facts the agent remembered about the driver (DriverMemory). */
+    val agentMemoryFacts: List<String> = emptyList(),
     // Wave J: multi-provider LLM connections (OpenRouter / z.ai / custom)
     val zaiApiKey: String = "",
     val customName: String = "",
     val customBaseUrl: String = "",
     val customApiKey: String = "",
     val customModel: String = "",
+    /** Raw JSON merged into every request to the custom connection (#167); blank = nothing extra. */
+    val customExtraJson: String = "",
     val primaryConn: String = "openrouter",
     val fallbackConn: String = "",
     val connTestRunning: String? = null,
@@ -235,6 +258,12 @@ class SettingsViewModel @Inject constructor(
     private val placeRepository: PlaceRepository,
     private val energyDataDeadDetector: com.bydmate.app.data.local.EnergyDataDeadDetector,
     private val hudController: com.bydmate.app.hud.HudController,
+    private val logRecorder: LogRecorder,
+    private val fidSubscriptionManager: com.bydmate.app.data.subscription.FidSubscriptionManager,
+    private val splitPreferences: com.bydmate.app.split.SplitPreferences,
+    private val splitSessionManager: com.bydmate.app.split.SplitSessionManager,
+    private val splitJournal: com.bydmate.app.split.SplitJournal,
+    private val driverMemory: com.bydmate.app.agent.DriverMemory,
 ) : ViewModel() {
 
     private val _appLanguage = MutableStateFlow(localePreferences.getLanguage() ?: "ru")
@@ -263,7 +292,7 @@ class SettingsViewModel @Inject constructor(
         // Force overlay teardown so the next attach picks up the new locale.
         // applicationContext keeps a stale Configuration after setApplicationLocales,
         // which leaves the floating widget rendering against the old language.
-        WidgetController.relocale()
+        WidgetController.relocale(appContext)  // C-5: pass context from VM, not from widgetView
     }
 
     /** Forget the remembered seat write-channel; next seat command re-probes primary→fallback. */
@@ -287,6 +316,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         loadSettings()
+        observeLogRecorder()
     }
 
     /** Load all settings from the repository on init. */
@@ -322,6 +352,8 @@ class SettingsViewModel @Inject constructor(
                 SettingsRepository.KEY_CONSUMPTION_BAD,
                 SettingsRepository.DEFAULT_CONSUMPTION_BAD
             )
+            val rangeCalcMethod = settingsRepository.getRangeCalcMethod()
+            val manualRangeTable = settingsRepository.getManualRangeTable()
 
             // Read boot log from SharedPreferences
             val bootInfo = readBootInfo()
@@ -356,6 +388,11 @@ class SettingsViewModel @Inject constructor(
                 legacyUrl = parkingCameraUrl,
             )
             WidgetPreferences(appContext).setParkingCameras(parkingCameras)
+
+            val webhookEnabled = settingsRepository.getString(SettingsRepository.KEY_WEBHOOK_ENABLED, "false") == "true"
+            val webhookUrl = settingsRepository.getString(SettingsRepository.KEY_WEBHOOK_URL, "")
+            val webhookSecret = settingsRepository.getString(SettingsRepository.KEY_WEBHOOK_SECRET, "")
+            val webhookSendLocation = settingsRepository.getString(SettingsRepository.KEY_WEBHOOK_SEND_LOCATION, "false") == "true"
             val mapTileSource = settingsRepository.getMapTileSource()
             val disableNativeAssistant =
                 settingsRepository.getString(SettingsRepository.KEY_DISABLE_NATIVE_ASSISTANT, "false") == "true"
@@ -408,6 +445,7 @@ class SettingsViewModel @Inject constructor(
             val customBaseUrl = settingsRepository.getString(SettingsRepository.KEY_CUSTOM_BASE_URL, "")
             val customApiKey = settingsRepository.getString(SettingsRepository.KEY_CUSTOM_API_KEY, "")
             val customModel = settingsRepository.getString(SettingsRepository.KEY_CUSTOM_MODEL, "")
+            val customExtraJson = settingsRepository.getString(SettingsRepository.KEY_CUSTOM_EXTRA_JSON, "")
             val primaryConn = settingsRepository.getString(SettingsRepository.KEY_AGENT_PRIMARY_CONN, "openrouter")
             val fallbackConn = settingsRepository.getString(SettingsRepository.KEY_AGENT_FALLBACK_CONN, "")
 
@@ -423,6 +461,8 @@ class SettingsViewModel @Inject constructor(
                     tripCostTariff = tripCostTariff,
                     consumptionGood = consumptionGood,
                     consumptionBad = consumptionBad,
+                    rangeCalcMethod = rangeCalcMethod,
+                    manualRangeTable = manualRangeTable,
                     lastBootInfo = bootInfo,
                     chainLog = chainLog,
                     openRouterApiKey = apiKey,
@@ -444,6 +484,10 @@ class SettingsViewModel @Inject constructor(
                     abrpSendLocation = abrpSendLocation,
                     parkingCameraUrl = parkingCameraUrl,
                     parkingCameras = parkingCameras,
+                    webhookEnabled = webhookEnabled,
+                    webhookUrl = webhookUrl,
+                    webhookSecret = webhookSecret,
+                    webhookSendLocation = webhookSendLocation,
                     mapTileSource = mapTileSource,
                     disableNativeAssistant = disableNativeAssistant,
                     voiceEnabled = voiceEnabled,
@@ -462,11 +506,13 @@ class SettingsViewModel @Inject constructor(
                     agentName = agentName,
                     agentPersona = agentPersona,
                     agentGender = agentGender,
+                    agentMemoryFacts = driverMemory.facts(),
                     zaiApiKey = zaiApiKey,
                     customName = customName,
                     customBaseUrl = customBaseUrl,
                     customApiKey = customApiKey,
                     customModel = customModel,
+                    customExtraJson = customExtraJson,
                     primaryConn = primaryConn,
                     fallbackConn = fallbackConn,
                 )
@@ -513,6 +559,31 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setString(SettingsRepository.KEY_BATTERY_CAPACITY, value)
         }
+    }
+
+    /** Switch between the learned (auto) and user-edited (manual) range calculators. */
+    fun saveRangeCalcMethod(value: String) {
+        _uiState.update { it.copy(rangeCalcMethod = value) }
+        viewModelScope.launch { settingsRepository.setRangeCalcMethod(value) }
+    }
+
+    fun showManualRangeTableDialog() {
+        _uiState.update { it.copy(showManualRangeTableDialog = true) }
+    }
+
+    fun hideManualRangeTableDialog() {
+        _uiState.update { it.copy(showManualRangeTableDialog = false) }
+    }
+
+    fun saveManualRangeTable(table: List<SettingsRepository.ManualRangePoint>) {
+        _uiState.update { it.copy(manualRangeTable = table, showManualRangeTableDialog = false) }
+        viewModelScope.launch { settingsRepository.setManualRangeTable(table) }
+    }
+
+    fun resetManualRangeTable() {
+        val defaults = SettingsRepository.defaultManualRangeTable()
+        _uiState.update { it.copy(manualRangeTable = defaults, showManualRangeTableDialog = false) }
+        viewModelScope.launch { settingsRepository.resetManualRangeTable() }
     }
 
     /** Update tariff in UI only (no DB save until explicit "Save" press). */
@@ -857,6 +928,7 @@ class SettingsViewModel @Inject constructor(
     fun saveCustomBaseUrl(value: String) = saveConnField(value, SettingsRepository.KEY_CUSTOM_BASE_URL) { s, v -> s.copy(customBaseUrl = v, customModelList = emptyList(), customModelsError = null) }
     fun saveCustomApiKey(value: String) = saveConnField(value, SettingsRepository.KEY_CUSTOM_API_KEY) { s, v -> s.copy(customApiKey = v) }
     fun saveCustomModel(value: String) = saveConnField(value, SettingsRepository.KEY_CUSTOM_MODEL) { s, v -> s.copy(customModel = v) }
+    fun saveCustomExtraJson(value: String) = saveConnField(value, SettingsRepository.KEY_CUSTOM_EXTRA_JSON) { s, v -> s.copy(customExtraJson = v) }
 
     private fun saveConnField(
         value: String,
@@ -1156,6 +1228,63 @@ class SettingsViewModel @Inject constructor(
             }
             delay(2000)
             _uiState.update { it.copy(abrpSaveStatus = null) }
+        }
+    }
+
+    fun toggleWebhook(enabled: Boolean) {
+        // Same reasoning as ABRP: without a URL there is nowhere to send, and
+        // an "on" toggle with no target only confuses the user.
+        val effective = enabled && _uiState.value.webhookUrl.isNotBlank()
+        _uiState.update { it.copy(webhookEnabled = effective) }
+        viewModelScope.launch {
+            settingsRepository.setString(SettingsRepository.KEY_WEBHOOK_ENABLED, effective.toString())
+        }
+    }
+
+    fun toggleWebhookSendLocation(enabled: Boolean) {
+        _uiState.update { it.copy(webhookSendLocation = enabled) }
+        viewModelScope.launch {
+            settingsRepository.setString(SettingsRepository.KEY_WEBHOOK_SEND_LOCATION, enabled.toString())
+        }
+    }
+
+    fun updateWebhookUrl(value: String) {
+        _uiState.update { it.copy(webhookUrl = value) }
+    }
+
+    fun updateWebhookSecret(value: String) {
+        _uiState.update { it.copy(webhookSecret = value) }
+    }
+
+    fun saveWebhookSettings() {
+        val state = _uiState.value
+        val url = state.webhookUrl.trim()
+        viewModelScope.launch {
+            // Reject garbage early: the send path silently drops an unparsable
+            // URL, so without this the user would see a working toggle and no data.
+            val valid = url.isEmpty() || url.toHttpUrlOrNull()
+                ?.let { com.bydmate.app.data.remote.WebhookTelemetryClient.isAllowedWebhookUrl(it) } == true
+            if (!valid) {
+                _uiState.update {
+                    it.copy(webhookSaveStatus = appContext.getString(R.string.settings_webhook_invalid_url))
+                }
+                delay(2000)
+                _uiState.update { it.copy(webhookSaveStatus = null) }
+                return@launch
+            }
+            settingsRepository.setString(SettingsRepository.KEY_WEBHOOK_URL, url)
+            settingsRepository.setString(SettingsRepository.KEY_WEBHOOK_SECRET, state.webhookSecret.trim())
+            val enabled = state.webhookEnabled && url.isNotEmpty()
+            settingsRepository.setString(SettingsRepository.KEY_WEBHOOK_ENABLED, enabled.toString())
+            _uiState.update {
+                it.copy(
+                    webhookUrl = url,
+                    webhookEnabled = enabled,
+                    webhookSaveStatus = appContext.getString(R.string.settings_webhook_saved),
+                )
+            }
+            delay(2000)
+            _uiState.update { it.copy(webhookSaveStatus = null) }
         }
     }
 
@@ -1487,6 +1616,21 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * Re-reads the driver facts the agent keeps in DriverMemory. The agent can remember or
+     * forget things while Settings is closed, so the card asks for a fresh list on entry
+     * instead of trusting what was loaded with the rest of the state.
+     */
+    fun refreshAgentMemory() {
+        _uiState.update { it.copy(agentMemoryFacts = driverMemory.facts()) }
+    }
+
+    /** Drops every remembered fact. No confirmation: the driver can tell them to the agent again. */
+    fun forgetAgentMemory() {
+        driverMemory.forgetAll()
+        _uiState.update { it.copy(agentMemoryFacts = emptyList()) }
+    }
+
+    /**
      * Runs a canned prompt through the REAL agent pipeline (AgentOrchestrator, tools
      * included) so the timing matches actual voice usage, and reports wall time + answer.
      * One in-flight guard: a tap while already running is ignored.
@@ -1511,22 +1655,43 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    private var logProcess: Process? = null
-    private var logFile: File? = null
-    private var logAutoStopJob: Job? = null
-
     companion object {
         private const val TAG = "SettingsViewModel"
-        private const val LOG_MAX_DURATION_MS = 2 * 60 * 60 * 1000L // 2 hours auto-stop
         /** Slug verified in the live OpenRouter catalog (2026-07-08). */
         internal const val DEFAULT_OPENROUTER_MODEL = "google/gemini-3.1-flash-lite"
-        private const val LOG_MAX_SIZE_BYTES = 50 * 1024 * 1024L // 50 MB max
         private const val PREVIEW_VOICE_TEXT =
             "Маршрут построен. Через двести метров поверните направо."
         private const val AGENT_TEST_PROMPT =
             "Проверка связи. Вызови инструмент get_vehicle_state и ответь одним коротким " +
                 "предложением: какой заряд батареи."
         private const val MINIMAX_SOURCE = "minimax"
+        /** Shared budget for the two daemon-backed dump sections (liveness + seat reads).
+         *  The dump must not hang on a wedged daemon. */
+        private const val HELPER_DIAG_BUDGET_MS = 3_000L
+    }
+
+    /** What the two daemon-backed dump sections need; nulls mean "not obtained in budget". */
+    private data class HelperDiagnostics(val alive: Boolean?, val seats: List<Pair<Int, Int>>?)
+
+    /**
+     * Collects daemon liveness and the seat fid snapshot under ONE shared budget.
+     *
+     * A binder transact is a blocking call: wrapping it in withTimeoutOrNull here would not
+     * return until the call finished, because cancellation only takes effect at a suspension
+     * point. So the reads run in a coroutine that is NOT a child of the dump, and only the
+     * WAIT is bounded — a wedged daemon leaves an IO thread parked instead of stalling the
+     * dump the user is trying to send us.
+     */
+    private suspend fun gatherHelperDiagnostics(): HelperDiagnostics {
+        val probe = viewModelScope.async(Dispatchers.IO) {
+            HelperDiagnostics(
+                alive = runCatching { helperClient.isAlive() }.getOrNull(),
+                // One binder round-trip for all ten seat reads.
+                seats = runCatching { helperClient.readBatch(SeatsDiagnostics.batchItems) }.getOrNull(),
+            )
+        }
+        return withTimeoutOrNull(HELPER_DIAG_BUDGET_MS) { probe.await() }
+            ?: HelperDiagnostics(null, null)
     }
 
     /**
@@ -1596,6 +1761,17 @@ class SettingsViewModel @Inject constructor(
                 appendLine("(failed to gather charging catch-up state: ${e.message})")
             }
 
+            // Live poll snapshot (#64: DiLink 3.0 park/gear triggers cannot be diagnosed
+            // without the raw gear value; nothing else in the dump or the log carries it).
+            appendLine("--- live snapshot ---")
+            val live = TrackingService.lastData.value
+            if (live == null) {
+                appendLine("(no poll yet)")
+            } else {
+                val ageS = (System.currentTimeMillis() - TrackingService.lastDataAtMs) / 1000
+                appendLine("age_s=$ageS gear=${live.gear} speed=${live.speed} powerState=${live.powerState} soc=${live.soc}")
+            }
+
             appendLine("--- vehicle data sources ---")
             try {
                 val energyDb = File("/storage/emulated/0/energydata")
@@ -1662,10 +1838,30 @@ class SettingsViewModel @Inject constructor(
                 appendLine("last_fire_rc=${diag?.lastRc ?: "n/a"} nonzero_rc_count=${diag?.nonZeroRcCount ?: 0}")
                 appendLine("amap_capable=${diag?.amapCapable ?: false} amap_frames=${diag?.amapFramesSent ?: 0} amap_stops=${diag?.amapStopsSent ?: 0}")
                 appendLine("hub_snapshot=${com.bydmate.app.navdata.NavGuidanceHub.snapshot()}")
+                // What each channel actually carried at every maneuver change (#94): the
+                // SOME/IP arrow field next to the Amap icon, on one timeline.
+                val maneuvers = com.bydmate.app.hud.HudManeuverJournal(hudPrefs).lines()
+                appendLine("maneuver history:")
+                if (maneuvers.isEmpty()) appendLine("  (none)")
+                else maneuvers.forEach { appendLine("  $it") }
                 appendLine("notif_listener_enabled=${
                     androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(appContext)
                         .contains(appContext.packageName)
                 }")
+                // Self-heal runs for every daemon-backed grant: all-false reasserts point at the
+                // daemon path, true reasserts with granted=false at the system reverting us.
+                val healHistory = com.bydmate.app.service.GrantSelfHeal.history()
+                if (healHistory.isEmpty()) {
+                    appendLine("grant_heal_history: (none)")
+                } else {
+                    appendLine("grant_heal_history:")
+                    val healSdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                    healHistory.forEach { e ->
+                        appendLine("${healSdf.format(Date(e.ts))} ${e.name} reason=${e.reason} " +
+                            "tries=${e.tries} reasserts=${e.reasserts.joinToString(",", "[", "]")} " +
+                            "granted=${e.granted}")
+                    }
+                }
                 // Parallel HUD apps: presence affects channel routing decisions.
                 val hudPm = appContext.packageManager
                 listOf(
@@ -1679,6 +1875,56 @@ class SettingsViewModel @Inject constructor(
                     appendLine("pkg $pkg: $state")
                 }
             } catch (e: Exception) { appendLine("(failed to gather hud state: ${e.message})") }
+
+            appendLine("--- cluster ---")
+            try {
+                val cpm = com.bydmate.app.cluster.ClusterProjectionManager
+                val clusterPrefs = appContext.getSharedPreferences(cpm.PREFS_NAME, Context.MODE_PRIVATE)
+                val diag = cpm.diag()
+                appendLine("mode: ${diag.mode} attempt_in_progress=${diag.attemptInProgress} " +
+                    "last_failure=${diag.lastFailure ?: "(none)"}")
+                appendLine("transport: ${if (cpm.isDirectProjectionEnabled(appContext)) "direct" else "vd"} " +
+                    "auto_container=${clusterPrefs.getBoolean(cpm.KEY_AUTO_CONTAINER, true)} " +
+                    "freeform_reboot_pending=${clusterPrefs.getBoolean(cpm.KEY_FREEFORM_REBOOT_PENDING, false)}")
+                appendLine("projected_pkg: ${diag.projectedPackage ?: "(none)"} " +
+                    "target=${clusterPrefs.getString(cpm.KEY_TARGET_PACKAGE, "(default)")}")
+                appendLine("vd: id=${diag.vdDisplayId} overlay_attached=${diag.overlayAttached} " +
+                    "direct_display=${diag.directDisplayId} " +
+                    "direct_marker=${clusterPrefs.getInt(cpm.KEY_DIRECT_DISPLAY_ID, -1)}")
+                // The window the user calibrated, resolved against the cluster panel as the
+                // projection itself resolves it — a grey/misplaced cluster (#134) is often just
+                // bounds that fall outside the visible zone.
+                val dm = appContext.getSystemService(Context.DISPLAY_SERVICE)
+                    as android.hardware.display.DisplayManager
+                val clusterDisplay = dm.displays.filter {
+                    it.name.contains("XDJAScreenProjection", ignoreCase = true)
+                }.let { p -> p.firstOrNull { it.name.endsWith("_1") } ?: p.firstOrNull() }
+                if (clusterDisplay == null) {
+                    appendLine("display: (no XDJAScreenProjection surface on this car)")
+                    appendLine("bounds: n/a")
+                } else {
+                    val size = android.graphics.Point()
+                    @Suppress("DEPRECATION") clusterDisplay.getRealSize(size)
+                    val metrics = android.util.DisplayMetrics()
+                    @Suppress("DEPRECATION") clusterDisplay.getMetrics(metrics)
+                    appendLine("display: id=${clusterDisplay.displayId} \"${clusterDisplay.name}\" " +
+                        "${size.x}x${size.y} dpi=${metrics.densityDpi}")
+                    val geo = com.bydmate.app.cluster.geometryFor(
+                        com.bydmate.app.cluster.ClusterMode.FULLSCREEN, size.x, size.y,
+                        clusterPrefs.getInt(cpm.KEY_WIDTH_PCT, com.bydmate.app.cluster.MAX_PROJECTION_PCT),
+                        clusterPrefs.getInt(cpm.KEY_HEIGHT_PCT, com.bydmate.app.cluster.MAX_PROJECTION_PCT),
+                        clusterPrefs.getInt(cpm.KEY_OFFSET_X_PCT, com.bydmate.app.cluster.CENTER_OFFSET_PCT),
+                        clusterPrefs.getInt(cpm.KEY_OFFSET_Y_PCT, com.bydmate.app.cluster.CENTER_OFFSET_PCT),
+                    )
+                    appendLine("bounds: " + if (geo == null) "n/a" else
+                        "[${geo.xOffset},${geo.yOffset},${geo.xOffset + geo.width},${geo.yOffset + geo.height}] " +
+                            "scale=${clusterPrefs.getInt(cpm.KEY_SCALE_PCT, com.bydmate.app.cluster.DEFAULT_SCALE_PCT)}%")
+                }
+                val clusterJournal = cpm.journalLines(appContext)
+                appendLine("journal:")
+                if (clusterJournal.isEmpty()) appendLine("  (empty)")
+                else clusterJournal.forEach { appendLine("  $it") }
+            } catch (e: Exception) { appendLine("(failed to gather cluster state: ${e.message})") }
 
             appendLine("--- trip counters ---")
             try {
@@ -1744,6 +1990,94 @@ class SettingsViewModel @Inject constructor(
                 }
             } catch (e: Exception) { appendLine("(failed to gather assistant package state: ${e.message})") }
 
+            // Both daemon sections come from one detached probe (see gatherHelperDiagnostics).
+            val helperDiag = gatherHelperDiagnostics()
+
+            appendLine("--- helper daemon ---")
+            try {
+                appendLine("alive: ${helperDiag.alive?.toString() ?: "(unknown — probe timed out)"}")
+                // How the daemon is reachable: a registered service name, or the Binder it
+                // broadcast to us on firmwares that refuse addService (#64/#148).
+                val registered = com.bydmate.app.data.vehicle.helperServiceBinder() != null
+                appendLine("transport: " + if (registered) "servicemanager"
+                    else com.bydmate.app.helper.HelperBinderHolder.transport)
+                appendLine("broadcast_last_reject: " +
+                    (com.bydmate.app.helper.HelperBinderHolder.lastReject ?: "(none)"))
+                val failure = helperBootstrap.lastSpawnFailure()
+                if (failure == null) {
+                    appendLine("last_spawn_failure: (none)")
+                } else {
+                    appendLine("last_spawn_failure: ${
+                        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(failure.ts))
+                    } reason=${failure.reason}")
+                    failure.detail.lines().forEach { appendLine("  $it") }
+                }
+            } catch (e: Exception) { appendLine("(failed to gather helper daemon state: ${e.message})") }
+
+            appendLine("--- split ---")
+            try {
+                appendLine("feature_enabled: ${splitPreferences.isFeatureEnabled()}")
+                // The freeform flag is read once at boot, so its value next to BOOT_COUNT and the
+                // verdict state is what tells a firmware that ignores the flag apart from one that
+                // simply has not been rebooted yet (#147).
+                val freeformFlag = android.provider.Settings.Global.getInt(
+                    appContext.contentResolver, "enable_freeform_support", -1)
+                appendLine("enable_freeform_support: " + if (freeformFlag < 0) "unset" else "$freeformFlag")
+                appendLine("boot_count: ${android.provider.Settings.Global.getInt(
+                    appContext.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)}")
+                val verdictPrefs = appContext.getSharedPreferences(
+                    com.bydmate.app.cluster.ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
+                val unsupported = verdictPrefs.getBoolean(
+                    com.bydmate.app.split.SplitFreeformVerdict.KEY_UNSUPPORTED, false)
+                val seenBoot = verdictPrefs.getInt(
+                    com.bydmate.app.split.SplitFreeformVerdict.KEY_SEEN_BOOT, 0)
+                val retryBoot = verdictPrefs.getInt(
+                    com.bydmate.app.split.SplitFreeformVerdict.KEY_RETRY_BOOT, 0)
+                val splitHint = verdictPrefs.getBoolean(
+                    com.bydmate.app.cluster.ClusterProjectionManager.KEY_SPLIT_FREEFORM_REBOOT_PENDING, false)
+                val clusterHint = verdictPrefs.getBoolean(
+                    com.bydmate.app.cluster.ClusterProjectionManager.KEY_FREEFORM_REBOOT_PENDING, false)
+                appendLine(
+                    "freeform_verdict: known_good=${com.bydmate.app.split.PaneTypePolicy().knownGood} " +
+                        "unsupported=$unsupported seen_boot=$seenBoot retry_boot=$retryBoot " +
+                        "split_hint=$splitHint cluster_hint=$clusterHint"
+                )
+                val lastPair = splitPreferences.getLastPair()
+                appendLine("last_pair: " + if (lastPair == null) "(none)" else
+                    "narrow=${lastPair.narrowPkg} wide=${lastPair.widePkg} side=${lastPair.narrowSide}")
+                when (val session = splitSessionManager.state.value) {
+                    is com.bydmate.app.split.SplitSessionState.Idle -> appendLine("session: idle")
+                    is com.bydmate.app.split.SplitSessionState.Active -> {
+                        appendLine(
+                            "session: active narrow=${session.pair.narrowPkg}#${session.narrowTaskId} " +
+                                "wide=${session.pair.widePkg}#${session.wideTaskId} " +
+                                "side=${session.pair.narrowSide} native=${session.nativePanes}"
+                        )
+                        val departed = splitSessionManager.departedPanePkgs()
+                        appendLine("departed_panes: " + if (departed.isEmpty()) "(none)" else departed.joinToString(","))
+                    }
+                }
+                val splitLines = splitJournal.read()
+                appendLine("journal:")
+                if (splitLines.isEmpty()) {
+                    appendLine("  (empty)")
+                } else {
+                    splitLines.forEach { appendLine("  $it") }
+                }
+            } catch (e: Exception) { appendLine("(failed to gather split state: ${e.message})") }
+
+            appendLine("--- seats ---")
+            SeatsDiagnostics.format(helperDiag.seats).forEach { appendLine(it) }
+
+            appendLine("--- seat command journal ---")
+            SeatsDiagnostics.journalLines(appContext).forEach { appendLine(it) }
+
+            appendLine("--- fid subscriptions ---")
+            try {
+                SubscriptionDiagnostics.format(fidSubscriptionManager.diagnosticsSnapshot())
+                    .forEach { appendLine(it) }
+            } catch (e: Exception) { appendLine("error: ${e.message}") }
+
             appendLine("--- last crash ---")
             try {
                 val crashes = CrashLog.read(appContext)
@@ -1767,124 +2101,49 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun startLogRecording() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                val fileName = "bydmate_logs_$timestamp.txt"
-
-                val saveDir = listOf(
-                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
-                    File("/storage/emulated/0/Download"),
-                    appContext.getExternalFilesDir(null)
-                ).firstOrNull { dir ->
-                    dir != null && (dir.exists() || dir.mkdirs()) && dir.canWrite()
+        viewModelScope.launch {
+            // Status for a successful start (and for a stop, including the 2h auto-stop)
+            // comes from the recorder state; only failures are reported here.
+            when (val result = logRecorder.start { file -> writeDiagnosticHeader(file) }) {
+                is LogRecorder.StartResult.Started, LogRecorder.StartResult.AlreadyRecording -> Unit
+                LogRecorder.StartResult.NoStorage -> _uiState.update {
+                    it.copy(logSaveStatus = appContext.getString(R.string.settings_log_error_no_fs_access))
                 }
-
-                if (saveDir == null) {
-                    _uiState.update { it.copy(logSaveStatus = appContext.getString(R.string.settings_log_error_no_fs_access)) }
-                    return@launch
+                is LogRecorder.StartResult.Failed -> _uiState.update {
+                    it.copy(logSaveStatus = appContext.getString(R.string.settings_error_with_message, result.message))
                 }
-
-                logFile = File(saveDir, fileName)
-
-                // Diagnostic header — written directly to the file before the
-                // logcat pipe so issue #19-style reports include device / setting
-                // context up front instead of being buried in logcat noise.
-                writeDiagnosticHeader(logFile!!)
-
-                // Clear logcat buffer and start continuous recording
-                Runtime.getRuntime().exec(arrayOf("logcat", "-c")).waitFor()
-
-                logProcess = Runtime.getRuntime().exec(arrayOf(
-                    "logcat", "-v", "time",
-                    "-s", "BootReceiver:*",
-                    "TrackingService:*", "TripTracker:*",
-                    "HistoryImporter:*", "EnergyDataReader:*",
-                    "AutoserviceClient:*", "AdbOnDeviceClient:*",
-                    "IternioTelemetryClient:*", "BatteryHealthRepository:*",
-                    "ChargesViewModel:*", "ChargeRepository:*",
-                    // v3.0.3: widen coverage to write/daemon/automation subsystems
-                    "HelperClient:*", "HelperBootstrap:*",
-                    "ActionDispatcher:*", "VehicleApiImpl:*",
-                    "AutomationEngine:*", "AutoserviceDetector:*",
-                    "SteeringWheelKeySvc:*",
-                    // v3.6: voice/audio diagnostics (issue #78 + Song volume reports)
-                    "AudioCapture:*", "SherpaTtsEngine:*", "VoiceController:*",
-                    // HUD wave: SOME/IP output + cluster projection diagnostics
-                    "HudController:*", "HudSomeIpBridge:*", "HudPushLoop:*",
-                    "ClusterProjection:*",
-                    // Direct projection wave: helper daemon (freeform switch diagnostics; visible
-                    // only once READ_LOGS is granted AND the app process restarted - the daemon
-                    // runs under the shell uid), guidance feed transitions, grant self-heal.
-                    "bydmate_helper:*", "HudIconLoader:*",
-                    "NavA11yFeed:*", "NavGuidanceHub:*", "GrantSelfHeal:*",
-                    // Amap-channel wave: notification lane + parser tags.
-                    "MediaSessionListener:*", "NaviNotifLane:*", "NaviNotifParser:*"
-                ))
-
-                // Background thread to pipe logcat to file with size limit.
-                // Open in append mode so the diagnostic header written by
-                // writeDiagnosticHeader() is preserved instead of overwritten.
-                Thread {
-                    try {
-                        logProcess?.inputStream?.bufferedReader()?.use { reader ->
-                            val target = logFile ?: return@Thread
-                            java.io.FileOutputStream(target, /* append = */ true)
-                                .bufferedWriter().use { writer ->
-                                var line = reader.readLine()
-                                while (line != null) {
-                                    // Stop if file exceeds size limit
-                                    if (target.length() > LOG_MAX_SIZE_BYTES) {
-                                        writer.write("--- LOG STOPPED: file size limit reached (50 MB) ---")
-                                        writer.newLine()
-                                        break
-                                    }
-                                    writer.write(line)
-                                    writer.newLine()
-                                    writer.flush()
-                                    line = reader.readLine()
-                                }
-                            }
-                        }
-                    } catch (_: Exception) {}
-                }.start()
-
-                // Auto-stop after 2 hours
-                logAutoStopJob = viewModelScope.launch {
-                    delay(LOG_MAX_DURATION_MS)
-                    stopLogRecording()
-                }
-
-                _uiState.update {
-                    it.copy(isRecordingLogs = true, logSaveStatus = appContext.getString(R.string.settings_log_recording_started, logFile?.absolutePath ?: "?"))
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(logSaveStatus = appContext.getString(R.string.settings_error_with_message, e.message ?: "?")) }
             }
         }
     }
 
     fun stopLogRecording() {
-        logAutoStopJob?.cancel()
-        logAutoStopJob = null
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                logProcess?.destroy()
-                logProcess = null
+        viewModelScope.launch { logRecorder.stop() }
+    }
 
-                val file = logFile
-                val sizeKb = (file?.length() ?: 0) / 1024
-
+    /**
+     * Mirrors the recorder state into the UI: a ViewModel created after the app
+     * window was closed picks up a recording that is still running, and a stop
+     * (manual or the 2h auto-stop) reports the saved file from any instance.
+     */
+    private fun observeLogRecorder() {
+        viewModelScope.launch {
+            var first = true
+            logRecorder.state.collect { state ->
                 _uiState.update {
-                    it.copy(
-                        isRecordingLogs = false,
-                        logSaveStatus = appContext.getString(R.string.settings_log_saved, file?.absolutePath ?: "?", sizeKb)
-                    )
+                    val status = when {
+                        state.isRecording -> appContext.getString(
+                            R.string.settings_log_recording_started, state.filePath ?: "?"
+                        )
+                        // A fresh ViewModel must not surface the result of a recording
+                        // the user stopped long ago.
+                        first -> it.logSaveStatus
+                        else -> state.lastStopped?.let { stopped ->
+                            appContext.getString(R.string.settings_log_saved, stopped.path, stopped.sizeKb)
+                        } ?: it.logSaveStatus
+                    }
+                    it.copy(isRecordingLogs = state.isRecording, logSaveStatus = status)
                 }
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(isRecordingLogs = false, logSaveStatus = appContext.getString(R.string.settings_error_with_message, e.message ?: "?"))
-                }
+                first = false
             }
         }
     }
@@ -1988,6 +2247,119 @@ class SettingsViewModel @Inject constructor(
     /** Dismiss the config backup/restore status message. */
     fun clearConfigStatus() {
         _uiState.update { it.copy(configStatus = null) }
+    }
+
+    /**
+     * Reflects all static int/long constants out of the BYD SDK fid classes via the helper
+     * daemon, writes the result to the public Download/fid-dump-<timestamp>.txt, prepends a
+     * 3-line header, then fires the standard ACTION_SEND share sheet.
+     *
+     * The folder is public (W6-F4) because the previous private filesDir target was reachable
+     * neither by a file manager nor by `adb pull`, so users could not hand the dump over.
+     *
+     * Privacy: NO automatic upload, NO background collection. The dump contains only SDK
+     * constant names/values; no VIN, no location, no personal data. The file leaves the
+     * device only through the user-driven share sheet.
+     */
+    fun dumpFids() {
+        // Compute the locale-aware context on the calling thread (Main) before switching to IO.
+        // This avoids thread-specific Robolectric issues and is cheap (createConfigurationContext).
+        val lc = appContext.appLocalizedContext()
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(fidDumpStatus = lc.getString(R.string.settings_fid_dump_in_progress)) }
+            // C-3: ensure fresh daemon so old-format TX_DUMP_FIDS replies are never encountered.
+            helperBootstrap.ensureRunning()
+            val dumpResult = helperClient.dumpFids()
+            val dump: String = when (dumpResult) {
+                is DumpFidsResult.BinderAbsent -> {
+                    _uiState.update {
+                        it.copy(fidDumpStatus = lc.getString(
+                            R.string.settings_error_with_message,
+                            lc.getString(R.string.settings_fid_dump_error_unavailable),
+                        ))
+                    }
+                    return@launch
+                }
+                is DumpFidsResult.ReadError -> {
+                    _uiState.update {
+                        it.copy(fidDumpStatus = lc.getString(
+                            R.string.settings_error_with_message,
+                            lc.getString(R.string.settings_fid_dump_error_read, dumpResult.detail),
+                        ))
+                    }
+                    return@launch
+                }
+                is DumpFidsResult.Success -> dumpResult.dump
+            }
+            if (dump.isBlank()) {
+                _uiState.update { it.copy(fidDumpStatus = lc.getString(R.string.settings_fid_dump_empty)) }
+                return@launch
+            }
+            try {
+                val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                val fileName = "fid-dump-$timestamp.txt"
+                // Same candidate chain and same target folder as startLogRecording(): straight
+                // into the public Download, no subfolder — CSV export, config backup and the APK
+                // update all land there too.
+                val dir = listOfNotNull(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    File("/storage/emulated/0/Download"),
+                    appContext.getExternalFilesDir(null),
+                ).firstOrNull { (it.isDirectory || it.mkdirs()) && it.canWrite() }
+                if (dir == null) {
+                    _uiState.update { it.copy(fidDumpStatus = lc.getString(R.string.settings_log_error_no_fs_access)) }
+                    return@launch
+                }
+                // Keep only the most recent dump so a share still reading the previous URI
+                // can finish; the new file makes it the second, giving a two-file rolling window.
+                dir.listFiles { _, name -> name.startsWith("fid-dump-") && name.endsWith(".txt") }
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.drop(1)
+                    ?.forEach { it.delete() }
+                val file = File(dir, fileName)
+                file.bufferedWriter().use { out ->
+                    val pi = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
+                    val vName = pi.versionName ?: "?"
+                    val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                        pi.longVersionCode.toString()
+                    else
+                        @Suppress("DEPRECATION") pi.versionCode.toString()
+                    val model = Build.MODEL
+                    val buildId = Build.DISPLAY
+                    val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+                    out.appendLine("BYDMate $vName ($vCode), $date")
+                    out.appendLine("model: $model  build: $buildId")
+                    out.appendLine("---")
+                    out.append(dump)
+                }
+                val uri = FileProvider.getUriForFile(
+                    appContext, "${appContext.packageName}.fileprovider", file,
+                )
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val chooser = Intent.createChooser(shareIntent, null).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                appContext.startActivity(chooser)
+                // Show the path the user actually sees in a file manager (storage root stripped),
+                // e.g. "Download/fid-dump-20260729-120000.txt".
+                val storageRoot = Environment.getExternalStorageDirectory()?.absolutePath
+                val visiblePath = file.absolutePath.let { path ->
+                    if (storageRoot != null && path.startsWith(storageRoot))
+                        path.removePrefix(storageRoot).trimStart('/')
+                    else
+                        path
+                }
+                _uiState.update { it.copy(fidDumpStatus = lc.getString(R.string.settings_fid_dump_saved, visiblePath)) }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(fidDumpStatus = lc.getString(R.string.settings_error_with_message, e.message ?: "?"))
+                }
+            }
+        }
     }
 
     /**

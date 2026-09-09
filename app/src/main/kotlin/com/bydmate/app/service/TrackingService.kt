@@ -35,6 +35,7 @@ import com.bydmate.app.data.remote.IternioRateLimitException
 import com.bydmate.app.data.remote.IternioServerErrorException
 import com.bydmate.app.data.repository.SettingsRepository
 import com.bydmate.app.data.remote.IternioTelemetryClient
+import com.bydmate.app.data.remote.WebhookTelemetryClient
 import com.bydmate.app.data.repository.ChargeRepository
 import com.bydmate.app.domain.tracker.TripState
 import com.bydmate.app.domain.tracker.TripTracker
@@ -64,6 +65,7 @@ import kotlinx.coroutines.withTimeout
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Named
+import org.json.JSONObject
 
 @AndroidEntryPoint
 class TrackingService : Service(), LocationListener {
@@ -88,6 +90,7 @@ class TrackingService : Service(), LocationListener {
     @Inject lateinit var cameraStateMonitor: com.bydmate.app.data.camera.CameraStateMonitor
     @Inject lateinit var adbOnDeviceClient: com.bydmate.app.data.autoservice.AdbOnDeviceClient
     @Inject lateinit var iternioTelemetryClient: IternioTelemetryClient
+    @Inject lateinit var webhookTelemetryClient: WebhookTelemetryClient
     @Inject lateinit var lastSessionRepository: com.bydmate.app.data.repository.LastSessionRepository
     @Inject lateinit var sharedAdaptiveLoop: com.bydmate.app.data.loop.SharedAdaptiveLoop
     @Inject lateinit var tripRecorder: com.bydmate.app.data.trips.TripRecorder
@@ -99,8 +102,12 @@ class TrackingService : Service(), LocationListener {
     @Inject lateinit var voiceGate: com.bydmate.app.voice.VoiceGate
     @Named("ttsLoadGuard") @Inject lateinit var ttsLoadGuard: com.bydmate.app.voice.AsrLoadGuard
     @Inject lateinit var ttsModelManager: com.bydmate.app.voice.TtsModelManager
+    @Inject lateinit var ttsEngine: com.bydmate.app.voice.TtsEngine
     @Inject lateinit var audioCapture: com.bydmate.app.voice.AudioCapture
     @Inject lateinit var hudController: com.bydmate.app.hud.HudController
+    @Inject lateinit var fidSubscriptionManager: com.bydmate.app.data.subscription.FidSubscriptionManager
+    @Inject lateinit var blindSpotController: com.bydmate.app.camera.BlindSpotController
+    @Inject lateinit var logRecorder: com.bydmate.app.diagnostics.LogRecorder
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var pollingJob: Job? = null
@@ -129,6 +136,7 @@ class TrackingService : Service(), LocationListener {
     @Volatile private var cachedLastTripAvg: Double? = null
 
     private var lastSummaryLogTs: Long = 0L
+    @Volatile private var lastGuidanceGrantRearmTs: Long = 0L
     // Live charging-end detector. We track gun-connect state across polls and
     // fire runCatchUp on the connected→disconnected edge. The gun signal is
     // sourced from autoservice (system SDK) — DiPlus' chargeGunState is
@@ -180,8 +188,10 @@ class TrackingService : Service(), LocationListener {
     // live charge (Song reports gun=null) can't split one session into many.
     @Volatile private var socRearmUsed = false
 
-    private val iternioTelemetryLock = Any()
-    @Volatile private var lastIternioTelemetryMs: Long = 0L
+    // Shared by both telemetry sinks (Iternio + custom webhook): they ride the
+    // same snapshot and the same cadence, so one timestamp gates both.
+    private val telemetryLock = Any()
+    @Volatile private var lastTelemetryMs: Long = 0L
     // Prevents two telemetry sends from overlapping: a slow ADB read can take
     // hundreds of ms, and stacking sends would burn the same in-flight ENG_POW
     // read across two parallel coroutines.
@@ -190,6 +200,10 @@ class TrackingService : Service(), LocationListener {
     // (exponential backoff). We refuse to send until `now >= iternioCooldownUntilMs`.
     @Volatile private var iternioCooldownUntilMs: Long = 0L
     @Volatile private var iternioConsecutive5xx: Int = 0
+    // Webhook cooldown: user endpoints go down for days (VPS off, tunnel gone).
+    // Flat 60 s after any failure — a dead URL then costs one request per minute
+    // instead of one per second while driving.
+    @Volatile private var webhookCooldownUntilMs: Long = 0L
 
     // Self-heal engines for daemon-backed grants. Lazy so they capture the service context only
     // after onCreate, and are never instantiated for callers that short-circuit before use.
@@ -198,17 +212,18 @@ class TrackingService : Service(), LocationListener {
             name = "star a11y",
             isGranted = ::starServiceRunning,
             reassert = { helperBootstrap.ensureRunning() && helperClient.enableAccessibilityService() },
+            // Android 10 (DiLink 3.0/4.0): a re-assert never clears AOSP Q's stuck mBindingServices
+            // (field logs: 0/12 successes), and a healthy bind lands by try 2; hand over to the
+            // daemon force-stop recovery after ~10 s instead of ~35 s.
+            attempts = if (android.os.Build.VERSION.SDK_INT <= 29) A11Y_ATTEMPTS_ANDROID10
+            else GrantSelfHeal.ATTEMPTS,
         )
     }
 
     private val notificationListenerGrant by lazy {
         GrantSelfHeal(
             name = "notification listener",
-            isGranted = {
-                val component = ComponentName(this, com.bydmate.app.media.MediaSessionListenerService::class.java)
-                getSystemService(NotificationManager::class.java)
-                    ?.isNotificationListenerAccessGranted(component) == true
-            },
+            isGranted = ::notificationListenerGranted,
             reassert = {
                 helperBootstrap.ensureRunning() &&
                     com.bydmate.app.media.MediaSessionGrant.ensureGranted(helperClient)
@@ -230,7 +245,14 @@ class TrackingService : Service(), LocationListener {
     companion object {
         private const val TAG = "TrackingService"
         private const val NOTIFICATION_ID = 1
+        private const val A11Y_ATTEMPTS_ANDROID10 = 2
         private const val CHANNEL_ID = "bydmate_tracking"
+        // Opt-in "quiet" channel (IMPORTANCE_MIN): the mandatory foreground notification collapses
+        // into the shade's silent list with no status-bar icon. Off by default - existing users keep
+        // the LOW channel untouched (#86). Pref lives in the cluster_projection file next to the other
+        // car/system toggles the settings screen edits.
+        private const val QUIET_CHANNEL_ID = "bydmate_tracking_quiet"
+        const val KEY_QUIET_NOTIFICATION = "quiet_notification"
         // Throttle autoservice gun-state read so we don't hit Binder/ADB on every
         // poll tick. 5 ticks ≈ 15 s — fast enough that the user sees a row
         // appear within ~half a minute of unplugging, gentle enough not to
@@ -244,6 +266,14 @@ class TrackingService : Service(), LocationListener {
         private const val SESSION_IDLE_CLOSE_MS = 10_000L
         // Throttle for the periodic INFO summary so logcat doesn't get flooded.
         private const val SUMMARY_LOG_INTERVAL_MS = 60_000L
+        // Guidance-active re-arm of the notification-listener grant: one 6×5 s
+        // self-heal run per 10 min at most, so a permanently-failing grant can't
+        // hammer the daemon for a whole trip.
+        private const val GUIDANCE_GRANT_REARM_MS = 600_000L
+        // Resuming a log recording interrupted by ignition-off: a couple of retries
+        // cover the storage mount lagging the service start, then we stop trying.
+        private const val LOG_RESUME_ATTEMPTS = 3
+        private const val LOG_RESUME_RETRY_DELAY_MS = 20_000L
         // Startup catch-up retries while the autoservice SOC fid is still
         // sentinel/unavailable during the cold-start window. 4 extra tries × 3 s
         // ≈ 12 s of grace before giving up — enough for the fid cache to warm so
@@ -293,6 +323,11 @@ class TrackingService : Service(), LocationListener {
 
         private val _lastData = MutableStateFlow<DiParsData?>(null)
         val lastData: StateFlow<DiParsData?> = _lastData
+        /** Wall-clock of the last [lastData] update (0 = never). The snapshot itself carries no
+         *  timestamp and is never cleared on transport loss, so consumers that voice it to the
+         *  driver (agent get_vehicle_state) need this to tell fresh data from stale. */
+        @Volatile var lastDataAtMs: Long = 0L
+            private set
 
         private val _lastRangeKm = MutableStateFlow<Double?>(null)
         val lastRangeKm: StateFlow<Double?> = _lastRangeKm
@@ -368,6 +403,10 @@ class TrackingService : Service(), LocationListener {
         private val _youtubeForeground = MutableStateFlow(false)
         val youtubeForeground: StateFlow<Boolean> = _youtubeForeground
 
+        /** Raw foreground package — widget hides itself in the user-picked apps. */
+        private val _foregroundPackage = MutableStateFlow<String?>(null)
+        val foregroundPackage: StateFlow<String?> = _foregroundPackage
+
         // Live reference to the running service so the floating widget can reach
         // the singleton AutomationEngine without binding. Mirrors how widget data
         // flows out through this companion. Set in onCreate, cleared in onDestroy.
@@ -395,6 +434,36 @@ class TrackingService : Service(), LocationListener {
                 onResult(matched)
             }
         }
+
+        /**
+         * A11y key filter → engine bridge for a steering-wheel key bound to a rule.
+         * Same shape as [fireAutomationButton]; matched count is diagnostics only
+         * (the key was already consumed by the time the rules run).
+         */
+        fun fireSteeringKey(keyCode: Int, onResult: (matched: Int) -> Unit) {
+            val svc = instance
+            if (svc == null) {
+                onResult(0)
+                return
+            }
+            svc.serviceScope.launch {
+                val matched = try {
+                    svc.automationEngine.onSteeringKey(keyCode)
+                } catch (e: Exception) {
+                    Log.w(TAG, "fireSteeringKey failed: ${e.message}")
+                    0
+                }
+                onResult(matched)
+            }
+        }
+
+        /**
+         * Synchronous "is this steering-wheel key bound to an enabled rule?" — answered
+         * off the engine's cached keycode set, so it is safe on the key-event path. No
+         * running service ⇒ false, and the key passes through to its native function.
+         */
+        fun steeringKeyAssigned(keyCode: Int): Boolean =
+            instance?.automationEngine?.steeringKeyCodes?.value?.contains(keyCode) == true
 
         fun start(context: Context) {
             val intent = Intent(context, TrackingService::class.java)
@@ -574,6 +643,12 @@ class TrackingService : Service(), LocationListener {
                     val modelDirId = com.bydmate.app.voice.TtsVoiceCatalog.byId(voiceId).modelDirId
                     ttsModelManager.delete(modelDirId)
                     ttsLoadGuard.reset()
+                } else if (voiceGate.isEnabled() && voiceGate.ttsEnabled()) {
+                    // Same pre-warm reasoning as the recognizer above: creating the synthesis
+                    // engine now, off the main thread, keeps the first reply from waiting on the
+                    // model load. Gated on both toggles so a driver who never speaks (or muted
+                    // the replies) does not pay the memory.
+                    ttsEngine.warmUp()
                 }
             }
         }
@@ -587,6 +662,20 @@ class TrackingService : Service(), LocationListener {
         // (service start, not first recorder use) minimizes the window where the log recorder
         // still cannot see the helper daemon's lines.
         serviceScope.launch { readLogsGrant.ensure("startup") }
+        // A recording the user started before ignition-off continues into the same
+        // file, so the startup itself (launch automations, steering-wheel keys) is
+        // in the log the user sends us.
+        serviceScope.launch {
+            // Retried while nothing is recording: this early the storage holding the
+            // log may still be unmounted, and a resumed logcat can die right away
+            // when the READ_LOGS grant above has not landed yet.
+            repeat(LOG_RESUME_ATTEMPTS) { attempt ->
+                if (attempt > 0) delay(LOG_RESUME_RETRY_DELAY_MS)
+                if (!logRecorder.state.value.isRecording && logRecorder.resumeIfPending()) {
+                    Log.i(TAG, "log recording resumed: ${logRecorder.state.value.filePath}")
+                }
+            }
+        }
         registerScreenWakeReceiver()
 
         // Start the network monitor BEFORE polling so the first evaluate() tick
@@ -594,6 +683,12 @@ class TrackingService : Service(), LocationListener {
         networkAvailableMonitor.start()
         startPolling()
         startCameraMonitor()
+        // Observe-only fid subscriptions (-test builds only): counts events, never
+        // touches the poll above.
+        fidSubscriptionManager.start()
+        // Blind-spot pipeline: idle until the poll below reports the car near the speed
+        // threshold, and only when the feature is switched on (default off).
+        blindSpotController.start(serviceScope)
         instance = this
         _isRunning.value = true
         ChainLog.append(this, "TrackingService fully started")
@@ -771,20 +866,42 @@ class TrackingService : Service(), LocationListener {
         Log.i(TAG, "Range live: sessionKm=${"%.1f".format(liveSessionKm)}, " +
             "liveAvg=${liveAvg?.let { "%.1f".format(it) } ?: "—"} kWh/100, " +
             "samples=${liveTripBuffer.sampleCount()}")
+
+        maybeRearmNotificationListenerGrant(now)
     }
 
     /**
-     * Отправка в [IternioTelemetryClient] с адаптивной частотой (см.
+     * Last-chance re-arm of the notification-listener grant while guidance is running. The
+     * startup/SCREEN_ON attempts can all fire before the helper daemon is up (field reports from
+     * Sea Lion 07/06), and by the time it matters — Navigator minimized, HUD fed from the
+     * notification — nothing retries. Guidance-active is exactly that moment.
+     */
+    private fun maybeRearmNotificationListenerGrant(now: Long) {
+        if (!com.bydmate.app.navdata.NavGuidanceHub.snapshot(now).active) return
+        if (now - lastGuidanceGrantRearmTs < GUIDANCE_GRANT_REARM_MS) return
+        if (runCatching { notificationListenerGranted() }.getOrDefault(false)) return
+        lastGuidanceGrantRearmTs = now
+        serviceScope.launch { notificationListenerGrant.ensure("guidance-active") }
+    }
+
+    /**
+     * Отправка живой телеметрии с адаптивной частотой (см.
      * [IternioIntervalPolicy]): 1 с в движении, 8 с при зарядке, 30 с на
      * парковке. Бессмысленно слать с одинаковым ритмом — ABRP калибрует
      * точность по плотности сэмплов за 10 секунд, и единственное окно где
      * нам нужен 1 Гц — это движение.
      *
+     * Получателей два и они независимы: [IternioTelemetryClient] (ABRP) и
+     * [WebhookTelemetryClient] (свой URL пользователя). Включены могут быть
+     * оба, один или ни одного. JSON строится ОДИН раз на тик; координаты
+     * подмешиваются копией на того получателя, у кого включён свой тумблер.
+     *
      * Single-flight на [iternioInFlight] не даёт двум tick'ам пересекаться:
      * сетевая отправка (и, в CHARGING-окне, autoservice-снапшоты battery/charging)
      * может занять несколько сотен мс, а очередь параллельных отправок забила бы
-     * канал и спутала throttle. На 429/5xx взводим [iternioCooldownUntilMs] и тихо
-     * пропускаем тики пока не остынет.
+     * канал и спутала throttle. Остывание раздельное: на 429/5xx взводим
+     * [iternioCooldownUntilMs], на любую ошибку вебхука — [webhookCooldownUntilMs],
+     * и тихо пропускаем тики пока не остынет.
      */
     private fun maybeSendIternioTelemetry(data: DiParsData, nowMs: Long) {
         if (!iternioInFlight.compareAndSet(false, true)) return
@@ -793,29 +910,45 @@ class TrackingService : Service(), LocationListener {
         val snapshotMs = nowMs
         serviceScope.launch {
             try {
-                if (settingsRepository.getString(
-                        com.bydmate.app.data.repository.SettingsRepository.KEY_ABRP_ENABLED,
-                        "false"
-                    ) != "true"
-                ) {
-                    return@launch
-                }
                 val token = settingsRepository.getString(
                     com.bydmate.app.data.repository.SettingsRepository.KEY_ABRP_USER_TOKEN,
                     ""
                 ).trim()
-                if (token.isEmpty()) return@launch
+                val abrpOn = settingsRepository.getString(
+                    com.bydmate.app.data.repository.SettingsRepository.KEY_ABRP_ENABLED,
+                    "false"
+                ) == "true" && token.isNotEmpty()
 
-                if (snapshotMs < iternioCooldownUntilMs) {
-                    Log.d(TAG, "Iternio cooldown active, skip (until ${iternioCooldownUntilMs - snapshotMs}ms)")
-                    return@launch
-                }
+                val webhookUrl = settingsRepository.getString(
+                    com.bydmate.app.data.repository.SettingsRepository.KEY_WEBHOOK_URL,
+                    ""
+                ).trim()
+                // Snapshot URL and secret together: the Iternio round-trip below can take
+                // seconds, and a settings edit mid-tick must not pair a stale URL with a fresh secret.
+                val webhookSecret = settingsRepository.getString(
+                    com.bydmate.app.data.repository.SettingsRepository.KEY_WEBHOOK_SECRET,
+                    ""
+                )
+                val webhookOn = settingsRepository.getString(
+                    com.bydmate.app.data.repository.SettingsRepository.KEY_WEBHOOK_ENABLED,
+                    "false"
+                ) == "true" && webhookUrl.isNotEmpty()
+
+                if (!abrpOn && !webhookOn) return@launch
 
                 val state = IternioIntervalPolicy.classifyFromDiPars(data)
                 val intervalMs = IternioIntervalPolicy.intervalSec(state) * 1000L
-                synchronized(iternioTelemetryLock) {
-                    if (snapshotMs - lastIternioTelemetryMs < intervalMs) return@launch
+                synchronized(telemetryLock) {
+                    if (snapshotMs - lastTelemetryMs < intervalMs) return@launch
                 }
+
+                // Cooldowns are per-target: a dead webhook must not silence ABRP.
+                val sendToIternio = abrpOn && snapshotMs >= iternioCooldownUntilMs
+                if (abrpOn && !sendToIternio) {
+                    Log.d(TAG, "Iternio cooldown active, skip (until ${iternioCooldownUntilMs - snapshotMs}ms)")
+                }
+                val sendToWebhook = webhookOn && snapshotMs >= webhookCooldownUntilMs
+                if (!sendToIternio && !sendToWebhook) return@launch
 
                 val apiKey = settingsRepository.getString(
                     com.bydmate.app.data.repository.SettingsRepository.KEY_ABRP_API_KEY,
@@ -826,11 +959,14 @@ class TrackingService : Service(), LocationListener {
                     ""
                 ).trim().takeIf { it.isNotEmpty() }
 
-                val sendLocation = settingsRepository.getString(
+                val abrpSendLocation = settingsRepository.getString(
                     com.bydmate.app.data.repository.SettingsRepository.KEY_ABRP_SEND_LOCATION,
                     "false"
                 ) == "true"
-                val location = locationForTelemetry(sendLocation, _lastLocation.value, snapshotMs)
+                val webhookSendLocation = settingsRepository.getString(
+                    com.bydmate.app.data.repository.SettingsRepository.KEY_WEBHOOK_SEND_LOCATION,
+                    "false"
+                ) == "true"
 
                 // Best-effort autoservice enrichment. Snapshots are heavier
                 // (multiple fids) — only read them in CHARGING window where
@@ -849,9 +985,9 @@ class TrackingService : Service(), LocationListener {
                 // 1 Hz. Null → client falls back to DiPars power.
                 val enginePowerKw: Int? = enginePowerKwFromSnapshot(data)
 
-                iternioTelemetryClient.send(
-                    apiKey = apiKey,
-                    userToken = token,
+                // Built once per tick and shared: the GPS fields are the only
+                // per-target difference, so they go into a copy (see [withLocation]).
+                val telemetry = iternioTelemetryClient.buildTelemetry(
                     data = data,
                     nominalCapacityKwh = settingsRepository.getBatteryCapacity(),
                     battery = battery,
@@ -859,37 +995,68 @@ class TrackingService : Service(), LocationListener {
                     carModel = carModel,
                     enginePowerKw = enginePowerKw,
                     sampleTimeMs = snapshotMs,
-                    latitude = location?.latitude,
-                    longitude = location?.longitude,
-                    headingDeg = location?.takeIf { it.hasBearing() }?.bearing?.toDouble(),
-                ).onSuccess {
-                    synchronized(iternioTelemetryLock) {
-                        lastIternioTelemetryMs = snapshotMs
+                ) ?: return@launch
+
+                // Throttle advances only when at least one sink actually took the
+                // sample, so a failed send still retries on the next tick.
+                var delivered = false
+
+                if (sendToIternio) {
+                    val location = locationForTelemetry(abrpSendLocation, _lastLocation.value, snapshotMs)
+                    iternioTelemetryClient.sendTelemetry(
+                        apiKey = apiKey,
+                        userToken = token,
+                        telemetry = withLocation(telemetry, location),
+                    ).onSuccess {
+                        delivered = true
+                        iternioConsecutive5xx = 0
+                    }.onFailure { e ->
+                        when (e) {
+                            is IternioRateLimitException -> {
+                                // Upstream said wait. Honor Retry-After if present;
+                                // fall back to 5 min when the header was missing —
+                                // long enough that we're not part of the storm,
+                                // short enough that the user gets data back once
+                                // the burst clears.
+                                val backoffSec = e.retryAfterSec ?: 300
+                                iternioCooldownUntilMs = snapshotMs + backoffSec * 1000L
+                                Log.w(TAG, "Iternio 429, cooldown ${backoffSec}s")
+                            }
+                            is IternioServerErrorException -> {
+                                // 5xx exponential backoff: 8 → 16 → 32 → 64 → 128 → 256 s
+                                // (capped at 300 s). We don't bump throttle on success
+                                // failures the user can't influence — wait for the
+                                // CDN to recover.
+                                iternioConsecutive5xx = (iternioConsecutive5xx + 1).coerceAtMost(6)
+                                val backoffSec = (8 shl (iternioConsecutive5xx - 1)).coerceAtMost(300)
+                                iternioCooldownUntilMs = snapshotMs + backoffSec * 1000L
+                                Log.w(TAG, "Iternio ${e.httpStatus}, cooldown ${backoffSec}s (n=$iternioConsecutive5xx)")
+                            }
+                            else -> Log.w(TAG, "Телеметрия Iternio: ${e.message}")
+                        }
                     }
-                    iternioConsecutive5xx = 0
-                }.onFailure { e ->
-                    when (e) {
-                        is IternioRateLimitException -> {
-                            // Upstream said wait. Honor Retry-After if present;
-                            // fall back to 5 min when the header was missing —
-                            // long enough that we're not part of the storm,
-                            // short enough that the user gets data back once
-                            // the burst clears.
-                            val backoffSec = e.retryAfterSec ?: 300
-                            iternioCooldownUntilMs = snapshotMs + backoffSec * 1000L
-                            Log.w(TAG, "Iternio 429, cooldown ${backoffSec}s")
-                        }
-                        is IternioServerErrorException -> {
-                            // 5xx exponential backoff: 8 → 16 → 32 → 64 → 128 → 256 s
-                            // (capped at 300 s). We don't bump throttle on success
-                            // failures the user can't influence — wait for the
-                            // CDN to recover.
-                            iternioConsecutive5xx = (iternioConsecutive5xx + 1).coerceAtMost(6)
-                            val backoffSec = (8 shl (iternioConsecutive5xx - 1)).coerceAtMost(300)
-                            iternioCooldownUntilMs = snapshotMs + backoffSec * 1000L
-                            Log.w(TAG, "Iternio ${e.httpStatus}, cooldown ${backoffSec}s (n=$iternioConsecutive5xx)")
-                        }
-                        else -> Log.w(TAG, "Телеметрия Iternio: ${e.message}")
+                }
+
+                if (sendToWebhook) {
+                    val location = locationForTelemetry(webhookSendLocation, _lastLocation.value, snapshotMs)
+                    webhookTelemetryClient.send(
+                        url = webhookUrl,
+                        secret = webhookSecret,
+                        telemetry = withLocation(telemetry, location),
+                    ).onSuccess {
+                        delivered = true
+                        webhookCooldownUntilMs = 0L
+                    }.onFailure { e ->
+                        // Flat 60 s: a user endpoint is either up or down, and
+                        // growing backoff would just hide it coming back.
+                        webhookCooldownUntilMs = System.currentTimeMillis() + 60_000L
+                        Log.w(TAG, "Вебхук: ${e.message}, пауза 60 с")
+                    }
+                }
+
+                if (delivered) {
+                    synchronized(telemetryLock) {
+                        lastTelemetryMs = snapshotMs
                     }
                 }
             } catch (e: Exception) {
@@ -897,6 +1064,19 @@ class TrackingService : Service(), LocationListener {
             } finally {
                 iternioInFlight.set(false)
             }
+        }
+    }
+
+    /**
+     * Копия [telemetry] с GPS-полями. Базовый payload координат не содержит —
+     * тумблер «отправлять координаты» у ABRP и вебхука свой, а объект один на оба.
+     */
+    private fun withLocation(telemetry: JSONObject, location: Location?): JSONObject {
+        if (location == null) return telemetry
+        return JSONObject(telemetry.toString()).apply {
+            put("lat", location.latitude)
+            put("lon", location.longitude)
+            if (location.hasBearing()) put("heading", location.bearing.toDouble())
         }
     }
 
@@ -928,9 +1108,12 @@ class TrackingService : Service(), LocationListener {
         }
 
         alicePollingManager.stop()
+        fidSubscriptionManager.stop()
+        blindSpotController.stop()
         cameraStateMonitor.stop()
         _cameraActive.value = false
         _youtubeForeground.value = false
+        _foregroundPackage.value = null
         networkAvailableMonitor.stop()
         try {
             unregisterReceiver(screenWakeReceiver)
@@ -1001,6 +1184,14 @@ class TrackingService : Service(), LocationListener {
         }
     }
 
+    // Declared explicitly: default interface methods on compileSdk 34, but ABSTRACT on API 29 -
+    // without them Android 10 (DiLink 3.0/4.0) throws AbstractMethodError from LocationManager's
+    // ListenerTransport whenever the GPS provider toggles (ignition off/on), killing the process.
+    override fun onProviderEnabled(provider: String) { /* no-op */ }
+    override fun onProviderDisabled(provider: String) { /* no-op */ }
+    @Deprecated("Deprecated in Java")
+    override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) { /* no-op */ }
+
     private fun startPolling() {
         Log.i(TAG, "Starting polling via SharedAdaptiveLoop")
         pollingJob = serviceScope.launch {
@@ -1020,6 +1211,9 @@ class TrackingService : Service(), LocationListener {
             sharedAdaptiveLoop.flow.collect { data ->
                 try {
                     _lastData.value = data
+                    lastDataAtMs = System.currentTimeMillis()
+                    fidSubscriptionManager.onPollSnapshot(data)
+                    blindSpotController.onPollSnapshot(data)
                     alicePollingManager.latestData = data
                     // Cache for AutoserviceChargingDetector — avoids extra parsReader.fetch() inside runCatchUp.
                     autoserviceDetector.onSample(data)
@@ -1164,7 +1358,11 @@ class TrackingService : Service(), LocationListener {
                         shortAvg = shortAvg,
                     )
 
-                    val rangeKm = rangeCalculator.estimate(soc = data.soc, totalElecKwh = data.totalElecConsumption)
+                    val rangeKm = rangeCalculator.estimate(
+                        soc = data.soc,
+                        totalElecKwh = data.totalElecConsumption,
+                        batteryTempC = data.avgBatTemp,
+                    )
                     _lastRangeKm.value = rangeKm
 
                     _tripDistanceKm.value = tripDistance
@@ -1284,6 +1482,9 @@ class TrackingService : Service(), LocationListener {
         serviceScope.launch {
             cameraStateMonitor.youtubeForeground.collect { _youtubeForeground.value = it }
         }
+        serviceScope.launch {
+            cameraStateMonitor.foregroundPackage.collect { _foregroundPackage.value = it }
+        }
     }
 
     private fun startLocationUpdates() {
@@ -1380,6 +1581,31 @@ class TrackingService : Service(), LocationListener {
      * that: verify-and-retry, gated on the TRUE liveness signal (SteeringWheelKeyService.isConnected)
      * plus the framework's running list, so a healthy service is never disturbed.
      */
+    // Diagnostic (DiLink 4 / Android 10): once the stuck state is named, poll the service state
+    // for ten minutes so a field log shows WHEN it clears (e.g. after the user taps a third-party
+    // launcher's privilege button) and whether our process survived (pid). Read-only, one at a time.
+    @Volatile private var a11yStuckWatch: kotlinx.coroutines.Job? = null
+    private fun startA11yStuckWatch() {
+        if (a11yStuckWatch?.isActive == true) return
+        a11yStuckWatch = serviceScope.launch {
+            val t0 = System.currentTimeMillis()
+            var wasRunning = false
+            repeat(60) { i ->
+                val running = starServiceRunning()
+                val listHasUs = runCatching {
+                    android.provider.Settings.Secure.getString(contentResolver, "enabled_accessibility_services")
+                        ?.contains(packageName) == true
+                }.getOrDefault(false)
+                Log.i(TAG, "a11y stuck watch +${(System.currentTimeMillis() - t0) / 1000}s: running=$running " +
+                    "enabledListHasUs=$listHasUs pid=${android.os.Process.myPid()}")
+                if (running && !wasRunning && i > 0) Log.w(TAG, "a11y stuck watch: service came back without our re-assert")
+                wasRunning = running
+                if (running) return@launch
+                kotlinx.coroutines.delay(10_000L)
+            }
+        }
+    }
+
     private suspend fun ensureStarServiceRunning(reason: String) {
         val prefs = getSharedPreferences(ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
         val mirrorEnabled = prefs.getBoolean(ClusterProjectionManager.KEY_MIRROR_ENABLED, false)
@@ -1387,10 +1613,46 @@ class TrackingService : Service(), LocationListener {
         // itself); without this, enabling Voice alone never re-binds the service (Finding 3).
         val voiceEnabled = getSharedPreferences("voice", Context.MODE_PRIVATE)
             .getBoolean(SettingsRepository.KEY_VOICE_ENABLED, false)
+        // The volume-knob play/pause interception lives in the same a11y filter: without the
+        // service bound the knob falls back to the firmware's audio-source switch.
+        val knobEnabled = prefs.getBoolean(ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE, false)
         // HUD guidance also reads Navigator via this a11y service; gate on CONFIRMED
         // support, not the raw pref, so unsupported cars stay untouched (Codex fix 1).
-        if (!mirrorEnabled && !voiceEnabled && !hudController.requiresA11y()) return
+        if (!mirrorEnabled && !voiceEnabled && !knobEnabled && !hudController.requiresA11y()) return
         starGrant.ensure(reason)
+        // Android 10 (DiLink 3.0/4.0): once our process died while bound, AccessibilityManagerService
+        // parks the component in mBindingServices and skips it on every settings rewrite until a
+        // package update, force-stop or reboot (AOSP Q updateServicesLocked, "wait for the binding").
+        // The daemon's remove+re-add then reports success while the framework never binds. Name the
+        // state only when every re-assert succeeded (daemon path healthy) and the service still is
+        // not running - all-false re-asserts mean a broken daemon, not a stuck framework.
+        val last = GrantSelfHeal.history().lastOrNull { it.name == "star a11y" }
+        val daemonOkButUnbound = last != null && !last.granted &&
+            last.reasserts.isNotEmpty() && last.reasserts.all { it }
+        if (android.os.Build.VERSION.SDK_INT <= 29 && daemonOkButUnbound && !starServiceRunning()) {
+            Log.w(TAG, "star a11y stuck in binding state ($reason): daemon re-asserted the setting " +
+                "${last.reasserts.size}x OK but the framework did not bind (AOSP Q mBindingServices)")
+            startA11yStuckWatch()
+            // Only in-framework way out: IActivityManager.forceStopPackage on ourselves, which runs
+            // PackageMonitor.onHandleForceStop and clears mBindingServices. The daemon does it and
+            // restarts us, so this call kills our own process - mark the attempt BEFORE it.
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            if (A11yRecoveryGate.shouldAttempt(prefs, nowElapsed)) {
+                if (A11yRecoveryGate.markAttempt(prefs, nowElapsed)) {
+                    Log.w(TAG, "star a11y recovery: asking daemon to force-stop + re-bind " +
+                        "(streak=${prefs.getInt(A11yRecoveryGate.KEY_FAIL_STREAK, 0)})")
+                    helperClient.recoverAccessibilityService()
+                } else {
+                    Log.w(TAG, "star a11y recovery: skipped, could not persist the rate-limit mark")
+                }
+            }
+        }
+    }
+
+    private fun notificationListenerGranted(): Boolean {
+        val component = ComponentName(this, com.bydmate.app.media.MediaSessionListenerService::class.java)
+        return getSystemService(NotificationManager::class.java)
+            ?.isNotificationListenerAccessGranted(component) == true
     }
 
     /**
@@ -1419,8 +1681,23 @@ class TrackingService : Service(), LocationListener {
             description = "Trip and charge tracking"
             setShowBadge(false)
         }
+        val quiet = NotificationChannel(
+            QUIET_CHANNEL_ID,
+            "BYDMate Tracking (quiet)",
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            description = "Trip and charge tracking, collapsed in the shade"
+            setShowBadge(false)
+        }
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(channel)
+        nm.createNotificationChannel(quiet)
+    }
+
+    private fun activeChannelId(): String {
+        val quiet = getSharedPreferences(ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_QUIET_NOTIFICATION, false)
+        return if (quiet) QUIET_CHANNEL_ID else CHANNEL_ID
     }
 
     private fun buildNotification(text: String): Notification {
@@ -1429,7 +1706,7 @@ class TrackingService : Service(), LocationListener {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, activeChannelId())
             .setContentTitle("BYDMate")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_compass)

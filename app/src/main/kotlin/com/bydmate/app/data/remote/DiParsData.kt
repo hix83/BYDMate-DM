@@ -41,7 +41,7 @@ data class DiParsData(
     val tirePressFR: Int?,
     val tirePressRL: Int?,
     val tirePressRR: Int?,
-    val driveMode: Int?,          // 1=ECO, 2=SPORT
+    val driveMode: Int?,          // 1=ECO, 2=SPORT, 3=NORMAL, 4=off-road category; 0 (transient) suppressed in reader
     val workMode: Int?,           // 0=stop, 1=EV, 2=forced EV, 3=HEV
     val autoPark: Int?,           // 0=disabled, 1=standby, 2=active
     val rain: Int?,
@@ -70,4 +70,25 @@ data class DiParsData(
     val wiperRelay: Int? = null,         // 0=idle, non-zero=wiping (raw signal for rain derivation)
     val autoWipers: Int? = null,         // rain-sensing auto wipers: 1=enabled
     val bmsState: Int? = null,           // BMS charging state: 1=CHARGING, 2=FINISH, 13=PAUSE (raw signal for chargingStatus derivation)
+    val turnSignal: Int? = null,         // 1=off, 2=left, 4=right, 6=hazard (mask holds while blinking)
+    // Tech panel wave (2026-09-05): live technical readings for the «Техника» screen.
+    val insulationKohm: Int? = null,     // HV pack ↔ body insulation resistance, kΩ
+    val motorTempFront: Int? = null,     // °C
+    val motorTempRear: Int? = null,
+    val inverterTempFront: Int? = null,
+    val inverterTempRear: Int? = null,
+    val hvVoltage: Int? = null,          // traction battery voltage, V
+    val hvCurrent: Double? = null,       // traction battery current, A (negative = charging)
+    val batteryPowerW: Double? = null,   // hvVoltage × hvCurrent, W (+ draw / − charge), #153
+    val bmsMaxChargeKw: Double? = null,
+    val bmsMaxDischargeKw: Int? = null,
+    val motorRpmFront: Int? = null,
+    val motorRpmRear: Int? = null,
+    val compressorW: Int? = null,        // AC / heat pump compressor draw, W
+    val tyreTempFL: Int? = null,         // °C
+    val tyreTempFR: Int? = null,
+    val tyreTempRL: Int? = null,
+    val tyreTempRR: Int? = null,
+    val pedalAccel: Int? = null,         // 0-100%
+    val pedalBrake: Int? = null,
 )

@@ -49,6 +49,8 @@ object FidMap {
         // Lights
         FidEntry("lightLow",             1004, 950009866,    5, Decoder.INT_ENUM),
         FidEntry("drl",                  1004, 1231040528,   5, Decoder.INT_ENUM),
+        // Live Leopard 3 2026-07-31: 1=off, 2=left, 4=right, 6=hazard (mask stays put while blinking)
+        FidEntry("turnSignal",           1004, 950009900,    5, Decoder.INT_ENUM),
         // Graduated from yaml status=candidate without formal D+ snap validation.
         // Smoke on real DiLink will surface sentinel returns or wrong values.
         // If a field shows sentinel/garbage in UI after upgrade — pull the fid from FidMap.
@@ -65,6 +67,12 @@ object FidMap {
         FidEntry("windowFR",             1001, 1267728400,   5, Decoder.INT_PERCENT),
         FidEntry("windowRL",             1001, 947912736,    5, Decoder.INT_PERCENT),
         FidEntry("windowRR",             1001, 947912752,    5, Decoder.INT_PERCENT),
+        // DiLink 3.0 catalogs expose the RR window percent under a different fid
+        // (BODYWORK_WINDOW_RIGHT_REAR_PERCENT 0x4b900018). Same semantics, read as a
+        // fallback when the DiLink 5.0 fid above returns a link error (#79).
+        FidEntry("windowRRGen3",         1001, 1267728408,   5, Decoder.INT_PERCENT),
+        // Percent fid (live Leopard 3 2026-07-30): 0=closed, 7=vent detent, 50=half, 100=open
+        FidEntry("sunroof",              1001, 1101004808,   5, Decoder.INT_PERCENT),
         FidEntry("trunk",                1001, 1074790416,   5, Decoder.INT_ENUM),
         FidEntry("lockFL",               1032, 1081081864,   5, Decoder.INT_ENUM),
         FidEntry("driveMode",            1006, 555745294,    5, Decoder.INT_ENUM),
@@ -94,5 +102,30 @@ object FidMap {
         FidEntry("keyBatteryStatus", 1014, 402653200,   5, Decoder.INT_ENUM),  // 0=ok, non-zero=low
         FidEntry("wiperRelay",       1046, 1336934438,  5, Decoder.INT_ENUM),  // 0=idle, non-zero=wiping
         FidEntry("autoWipers",       1046, 321912862,   5, Decoder.INT_ENUM),  // 1=rain-sensing wipe enabled
+        // Tech panel wave (2026-09-05). Raw ints; the range checks live in
+        // NativeParsReader.assembleSnapshot (motor/inverter temps exceed the -50..80
+        // envelope INT_TEMP_C enforces). Battery temp extremes and the AC on/off flag
+        // are already mapped above as maxBatTemp/minBatTemp/acStatus.
+        FidEntry("insulationKohm",     1039, 1134559256,  5, Decoder.INT_RAW),   // kΩ between HV pack and body
+        FidEntry("motorTempFront",     1039, 1154482192,  5, Decoder.INT_RAW),
+        FidEntry("motorTempRear",      1039, 1155530768,  5, Decoder.INT_RAW),
+        FidEntry("inverterTempFront",  1039, 1154482184,  5, Decoder.INT_RAW),
+        FidEntry("inverterTempRear",   1039, 1155530760,  5, Decoder.INT_RAW),
+        FidEntry("hvVoltage",          1009, 1145045000,  5, Decoder.INT_RAW),
+        FidEntry("hvCurrent",          1009, 1145045016,  7, Decoder.FLOAT_AMP), // negative = charging (#153)
+        // Unproven on the car (0.0 while parked) — logged only, not surfaced in UI.
+        FidEntry("motorCurrentFront",  1009, 1186988040,  7, Decoder.FLOAT_AMP),
+        FidEntry("motorCurrentRear",   1009, 1186988056,  7, Decoder.FLOAT_AMP),
+        FidEntry("bmsMaxChargeKw",     1014, 877658136,   5, Decoder.INT_SCALED, scale = 0.1),
+        FidEntry("bmsMaxDischargeKw",  1014, 1145045048,  5, Decoder.INT_RAW),
+        FidEntry("motorRpmFront",      1012, 1141899272,  5, Decoder.INT_RAW),
+        FidEntry("motorRpmRear",       1012, 621805576,   5, Decoder.INT_RAW),
+        FidEntry("compressorW",        1000, 1031798840,  5, Decoder.INT_RAW),
+        FidEntry("tyreTempFL",         1007, 1246797848,  5, Decoder.INT_RAW),
+        FidEntry("tyreTempFR",         1007, 1246797860,  5, Decoder.INT_RAW),
+        FidEntry("tyreTempRL",         1007, 1246797872,  5, Decoder.INT_RAW),
+        FidEntry("tyreTempRR",         1007, 1246797884,  5, Decoder.INT_RAW),
+        FidEntry("pedalAccel",         1013, 874512392,   5, Decoder.INT_RAW),
+        FidEntry("pedalBrake",         1013, 874512400,   5, Decoder.INT_RAW),
     )
 }

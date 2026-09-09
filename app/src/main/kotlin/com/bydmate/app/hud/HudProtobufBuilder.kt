@@ -5,6 +5,11 @@ import java.io.ByteArrayOutputStream
 /** Hand-rolled protobuf encoder for the BYD HUD frame (discope reference, donor stage 6).
  *  Field ORDER inside the inner message is significant for the HUD firmware:
  *  f2 -> f6 -> f7 -> f8 -> f9 -> f10 -> f11 -> f16 -> f26 -> f28 -> f33.
+ *  f7 carries the speed-limit sign PNG and f6 switches to 6 while it is present: byd-hud
+ *  reads f7 as a lane band instead, but the field says otherwise - the glass draws nothing
+ *  from the f11 number alone (v3.11.6 regression, both Sea Lion 07 and Leopard 3), while
+ *  the v3.11.5 PNG rendered on both. f5 (lane count) and f29 (lane markup) are the rest of
+ *  the lane bank and stay reserved until a real lane source exists.
  *  Never emit f3/f4/f12/f17/f18/f21..f25/f30/f31 (verified to glitch the HUD).
  *  Outer wrapper: 0x0A + varint(len) + inner bytes. */
 object HudProtobufBuilder {
@@ -12,15 +17,38 @@ object HudProtobufBuilder {
     const val MAX_PAYLOAD_BYTES = 65536
     const val MAX_ROAD_CHARS = 200
 
-    /** GAODE maneuver -> f28 reference arrow: 3=left, 2=right, 9=uturn, 0=roundabout, 1=straight/other. */
+    /** Below 11 m the glass glitches the distance readout, so byd-hud
+     *  (HudDisplayPolicy) reports 0..10 m as 11 m. */
+    private const val MIN_DISTANCE_METERS = 11
+
+    /** GAODE maneuver -> f28, the animated chevron the glass draws natively.
+     *  Real enum (byd-hud `GMapsDirectManeuverMap.nativeFor`, field-tested donor):
+     *  1=left, 2=right, 3=slight left, 5=slight right, 7=U-turn left, 8=U-turn right,
+     *  11=straight, 99=blank. Values outside the enum render as a phantom left chevron,
+     *  so anything without a glyph (roundabouts, destination, waypoints) is sent as 99.
+     *  The earlier discope-derived table used a different, wrong enum: it sent 1 for the
+     *  destination and 0 for roundabouts, which the glass drew as an animated left turn
+     *  (issue #94). */
     fun gaodeToF28(gaode: Int): Int = when (gaode) {
-        1, 3, 7 -> 3
-        2, 4, 8 -> 2
-        9, 10 -> 9
-        // Roundabouts: suppress the f28 arrow (0), direction is carried by the
-        // per-exit f8 icon -- a flat "straight" arrow here is what bug #94 showed.
-        in 24..34 -> 0
-        else -> 1
+        // No maneuver known (expired or unmapped): raw 0 clears the arrow on the glass
+        // (donor buildNew). Mapping it to "straight" left a passed turn hanging there.
+        0 -> 0
+        1 -> 1
+        2 -> 2
+        3 -> 3
+        4 -> 5
+        // No sharp-turn glyph on the glass; byd-hud collapses sharp to the normal turn.
+        7 -> 1
+        8 -> 2
+        9 -> 7
+        10 -> 8
+        // Straight, solid and dotted.
+        11, 12 -> 11
+        // Roundabout family (13 enter, 24 exit, 25..34 per-exit, 35..44 left-hand traffic):
+        // no glyph exists, direction is carried by the per-exit f8 icon instead.
+        in 13..44 -> 99
+        // Destination, waypoint, ferry, toll, tunnel, unknown: blank, never a phantom arrow.
+        else -> 99
     }
 
     fun buildFrame(
@@ -41,7 +69,7 @@ object HudProtobufBuilder {
         writeVarintField(inner, 6, if (speedSignPng != null) 6L else 1L)
         if (speedSignPng != null) writeBytesField(inner, 7, speedSignPng)
         if (maneuverIconPng != null) writeBytesField(inner, 8, maneuverIconPng)
-        writeVarintField(inner, 9, distanceMeters.toLong())
+        writeVarintField(inner, 9, displayDistance(distanceMeters).toLong())
         if (road.isNotEmpty()) writeBytesField(inner, 10, road.toByteArray(Charsets.UTF_8))
         if (speedLimit > 0) writeVarintField(inner, 11, speedLimit.toLong())
         writeVarintField(inner, 16, 2L)
@@ -52,8 +80,8 @@ object HudProtobufBuilder {
         return wrap(inner.toByteArray())
     }
 
-    /** buildFrame with the donor's size fallback: past MAX_PAYLOAD_BYTES the speed-sign PNG
-     *  (f7) is dropped first; the maneuver icon (f8) is never dropped. */
+    /** buildFrame with the road cap and the donor's size fallback: past MAX_PAYLOAD_BYTES the
+     *  speed-sign PNG (f7) is dropped first; the maneuver icon (f8) is never dropped. */
     fun buildFrameSafe(
         maneuverGaode: Int,
         distanceMeters: Int,
@@ -84,6 +112,10 @@ object HudProtobufBuilder {
         writeVarintField(inner, 16, 1L)
         return wrap(inner.toByteArray())
     }
+
+    /** f9 as the glass wants it: 0..10 m lifted to 11 m, everything else untouched. */
+    private fun displayDistance(distanceMeters: Int): Int =
+        if (distanceMeters in 0 until MIN_DISTANCE_METERS) MIN_DISTANCE_METERS else distanceMeters
 
     private fun progress(distanceMeters: Int, totalDistMeters: Int): Double {
         if (totalDistMeters <= 0) return 0.0

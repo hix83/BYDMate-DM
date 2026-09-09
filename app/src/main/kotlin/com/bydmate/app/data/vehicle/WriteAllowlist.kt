@@ -73,6 +73,7 @@ class WriteAllowlist(private val map: Map<String, WriteEntry>) {
             1023 to 1330643002,  // SET_INSIDE_LIGHT_STATE_SET (interior light on/off)
             1023 to 1069547536,  // SET_INTERIOR_ATMOSPHERE_LAMP_BRIGHTNESS_SET (ambient)
             1004 to 1125122118,  // DRL (daytime running lights) on/off
+            1004 to 871366669,   // hazard lights — live-validated on Leopard 3 2026-07-31
             1023 to 850427920,  // fridge WORKING_STATUS_SET (cool/heat/off) — com.byd.car.icebox
             1023 to 850427928,  // fridge TEMP_REGULATION_SET — com.byd.car.icebox
         )
@@ -152,6 +153,11 @@ class WriteAllowlist(private val map: Map<String, WriteEntry>) {
             // DRL (daytime running lights) — 1=on, 2=off (0 invalid), dev=1004 carve-out
             WriteEntry("drl_on",  1004, 1125122118, null, 1, 1, "lights", true, "live-leopard3-2026-05-29"),
             WriteEntry("drl_off", 1004, 1125122118, null, 2, 2, "lights", true, "live-leopard3-2026-05-29"),
+            // hazard lights — 0=off, 1=hazard (2/3 = turn signals, deliberately not exposed),
+            // dev=1004 carve-out. No readback: the read fid 950009900 is a different mask
+            // (6 while hazard is on), and reading 871366669 itself returns -10011 (write-only).
+            WriteEntry("hazard_on",  1004, 871366669, null, 1, 1, "lights", true, "live-leopard3-2026-07-31"),
+            WriteEntry("hazard_off", 1004, 871366669, null, 0, 0, "lights", true, "live-leopard3-2026-07-31"),
             // mirror heat = rear-window defrost (single button on Leopard 3) — 1=on, 0=off, dev=1000
             WriteEntry("defrost_rear_on",  1000, 501219357, null, 1, 1, "climate", true, "live-leopard3-2026-05-29"),
             WriteEntry("defrost_rear_off", 1000, 501219357, null, 0, 0, "climate", true, "live-leopard3-2026-05-29"),
@@ -179,11 +185,36 @@ class WriteAllowlist(private val map: Map<String, WriteEntry>) {
             WriteEntry("fridge_temp_heat", 1023, 850427928, null, 35, 50, "fridge", true, "live-leopard3-2026-06-29"),
         )
 
+        /** dev of the seat status fids below (same namespace as the primary write channel). */
+        const val SEAT_STATUS_DEV = 1000
+
+        /**
+         * READ-side status fid per seat group (tx=5), the counterpart of the dev=1000
+         * switch entries above: 1=on, 2=off on Leopard 3. [AdaptiveSeatChannel] reads it
+         * back after a switch write, because Song L / Han EV answer status=1 to that write
+         * and actuate nothing (#74/#98/#109) — there the fid stays 0 and the readback is
+         * the only signal that the primary channel is dead on this model.
+         *
+         * DRIVER ONLY. The passenger counterparts in the catalog (711983128 / 711983132)
+         * are AC_PASSENGER_SEAT_VENTILATING_LEVEL / _HEATING_LEVEL — LEVELS (0=off, 1..5),
+         * not this 1=on/2=off status enum, so verifying a level-2 command against "expect 1"
+         * would manufacture a contradiction on a healthy Leopard 3. The passenger status
+         * fids (711983112 / 711983116) are unvalidated on a live car and stay out until a
+         * field dump shows them alive (they are sampled by SeatsDiagnostics). A group with
+         * no entry here reads back as null = inconclusive, which never moves the winner —
+         * the driver vertical alone decides the channel, and the winner is channel-wide.
+         */
+        val SEAT_STATUS_FIDS: Map<SeatGroup, Int> = mapOf(
+            SeatGroup.DRIVER_VENT to 702545928,
+            SeatGroup.DRIVER_HEAT to 702545932,
+        )
+
         /**
          * Candidate (unvalidated) native channels staged for an in-vehicle snap.
          * Holds the seat heat/vent dev=1001 fallback channel (competitor-v80 fids)
          * used by AdaptiveSeatChannel when the primary dev=1000 path returns a
-         * permanent error on non-Leopard-3 models. The merge order in [loadProduction]
+         * permanent error on non-Leopard-3 models, plus the window CTRL channel used
+         * by [WindowChannelRouter] on DiLink 3.0. The merge order in [loadProduction]
          * folds these in after competitor JSON; LIVE_VALIDATED wins on collision.
          */
         val CANDIDATE_UNVALIDATED: List<WriteEntry> = listOf(
@@ -191,6 +222,16 @@ class WriteAllowlist(private val map: Map<String, WriteEntry>) {
             // value range 1..6: 1=off, 2=lvl1 ... 6=lvl5. Used by AdaptiveSeatChannel
             // when dev=1000 primary returns NOOP/PERMANENT (e.g. Song Plus / DiLink 3).
             // Not live-validated on those models yet — confirmed via competitor-v80.
+            // Window CTRL channel (1=open, 2=close, 3=stop, 4=half, 5=vent) — the only
+            // window family present in BOTH DiLink 3.0 and 5.0 catalogs (#79), used by
+            // [WindowChannelRouter]. Unvalidated as a family: the front fids are
+            // live-validated on Leopard 3 only for values 1/2 (see the short-form
+            // open/close entries), the rear short-form fids are no-ops there. The
+            // DiLink 3.0 field report will confirm the full 1..5 range.
+            WriteEntry("window_driver_ctrl",     1001, 1125122104, null, 1, 5, "windows", false, "dilink3-catalog-2026-07-30"),
+            WriteEntry("window_passenger_ctrl",  1001, 1125122107, null, 1, 5, "windows", false, "dilink3-catalog-2026-07-30"),
+            WriteEntry("window_rear_left_ctrl",  1001, 1125122112, null, 1, 5, "windows", false, "dilink3-catalog-2026-07-30"),
+            WriteEntry("window_rear_right_ctrl", 1001, 1125122115, null, 1, 5, "windows", false, "dilink3-catalog-2026-07-30"),
             WriteEntry("driver_seat_heat_fallback",    1001, 1125122068, null, 1, 6, "seats", false, "competitor-v80"),
             WriteEntry("driver_seat_vent_fallback",    1001, 1125122064, null, 1, 6, "seats", false, "competitor-v80"),
             WriteEntry("passenger_seat_heat_fallback", 1001, 1125122076, null, 1, 6, "seats", false, "competitor-v80"),

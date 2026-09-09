@@ -29,6 +29,7 @@ import com.bydmate.app.data.nativestack.ParsReader
 import com.bydmate.app.data.trips.TripRecorder
 import com.bydmate.app.domain.calculator.OdometerConsumptionBuffer
 import com.bydmate.app.domain.calculator.RangeAvgSource
+import com.bydmate.app.domain.calculator.ManualRangeCalculator
 import com.bydmate.app.domain.calculator.RangeCalculator
 import com.bydmate.app.domain.calculator.SocInterpolator
 import com.bydmate.app.domain.calculator.SocInterpolatorPrefs
@@ -405,14 +406,22 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideManualRangeCalculator(): ManualRangeCalculator = ManualRangeCalculator()
+
+    @Provides
+    @Singleton
     fun provideRangeCalculator(
         rangeAvgSource: RangeAvgSource,
         settingsRepository: SettingsRepository,
         socInterpolator: SocInterpolator,
+        manualRangeCalculator: ManualRangeCalculator,
     ): RangeCalculator = RangeCalculator(
         buffer = rangeAvgSource,
         capacityProvider = { settingsRepository.getBatteryCapacity() },
         socInterpolator = socInterpolator,
+        manualCalculator = manualRangeCalculator,
+        methodProvider = { settingsRepository.getRangeCalcMethod() },
+        manualTableProvider = { settingsRepository.getManualRangeTable() },
     )
 
     @Provides
@@ -513,6 +522,25 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideSeatCommandJournal(@ApplicationContext ctx: Context): com.bydmate.app.data.vehicle.SeatCommandJournal =
+        com.bydmate.app.data.vehicle.SeatCommandJournal(
+            ctx.getSharedPreferences(
+                com.bydmate.app.data.vehicle.SeatCommandJournal.PREFS_NAME, Context.MODE_PRIVATE)
+        )
+
+    /** The one journal instance the projection object and the camera both write into (#135). */
+    @Provides
+    @Singleton
+    fun provideClusterJournal(@ApplicationContext ctx: Context): com.bydmate.app.cluster.ClusterJournal =
+        com.bydmate.app.cluster.ClusterJournal.shared(ctx)
+
+    @Provides
+    @Singleton
+    fun provideWindowChannelStore(@ApplicationContext ctx: Context): com.bydmate.app.data.vehicle.WindowChannelStore =
+        com.bydmate.app.data.vehicle.WindowChannelStorePrefs(ctx.getSharedPreferences("window_channel", Context.MODE_PRIVATE))
+
+    @Provides
+    @Singleton
     fun provideVehicleApi(
         parsReader: com.bydmate.app.data.nativestack.ParsReader,
         autoservice: com.bydmate.app.data.autoservice.AutoserviceClient,
@@ -520,8 +548,13 @@ object AppModule {
         allowlist: com.bydmate.app.data.vehicle.WriteAllowlist,
         writeLogDao: VehicleWriteLogDao,
         seatChannelStore: com.bydmate.app.data.vehicle.SeatChannelStore,
+        windowChannelStore: com.bydmate.app.data.vehicle.WindowChannelStore,
+        seatCommandJournal: com.bydmate.app.data.vehicle.SeatCommandJournal,
     ): com.bydmate.app.data.vehicle.VehicleApi =
-        com.bydmate.app.data.vehicle.VehicleApiImpl(parsReader, autoservice, helper, allowlist, writeLogDao, seatChannelStore)
+        com.bydmate.app.data.vehicle.VehicleApiImpl(
+            parsReader, autoservice, helper, allowlist, writeLogDao, seatChannelStore, windowChannelStore,
+            seatCommandJournal,
+        )
 
     @Provides
     @Singleton
@@ -539,8 +572,8 @@ object AppModule {
             "update_prefs",
             "bydmate_range_prefs",
             // Durable user voice/agent settings (AC-03). Deliberately NOT included:
-            // energydata_sync / energydata_liveness / seat_channel — per-device learned
-            // state that must not migrate to another car.
+            // energydata_sync / energydata_liveness / seat_channel / window_channel —
+            // per-device learned state that must not migrate to another car.
             "voice",
         )
     )
@@ -553,5 +586,105 @@ object AppModule {
         @dagger.hilt.android.qualifiers.ApplicationContext context: android.content.Context,
     ): com.bydmate.app.data.vehicle.HelperBootstrap =
         com.bydmate.app.data.vehicle.HelperBootstrap(adb, helper, context)
+
+    @Provides
+    @Singleton
+    fun provideSplitPreferences(
+        @ApplicationContext ctx: Context,
+    ): com.bydmate.app.split.SplitPreferences =
+        com.bydmate.app.split.SplitPreferencesImpl(ctx)
+
+    @Provides
+    @Singleton
+    fun provideSplitJournal(
+        @ApplicationContext ctx: Context,
+    ): com.bydmate.app.split.SplitJournal =
+        com.bydmate.app.split.SplitJournalImpl(com.bydmate.app.split.PrefsSplitJournalStore(ctx))
+
+    @Provides
+    @Singleton
+    fun provideSplitBackdrop(
+        controller: com.bydmate.app.split.SplitOverlayController,
+    ): com.bydmate.app.split.SplitBackdrop = controller
+
+    @Provides
+    @Singleton
+    fun provideSplitSessionManager(
+        helper: com.bydmate.app.data.vehicle.HelperClient,
+        prefs: com.bydmate.app.split.SplitPreferences,
+        backdrop: com.bydmate.app.split.SplitBackdrop,
+        @javax.inject.Named("io") dispatcher: kotlinx.coroutines.CoroutineDispatcher,
+        @ApplicationContext ctx: Context,
+        bootstrap: com.bydmate.app.data.vehicle.HelperBootstrap,
+        journal: com.bydmate.app.split.SplitJournal,
+    ): com.bydmate.app.split.SplitSessionManager = com.bydmate.app.split.SplitSessionManager(
+        helper = helper,
+        prefs = prefs,
+        backdrop = backdrop,
+        scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + dispatcher
+        ),
+        onFreeformLive = { com.bydmate.app.cluster.ClusterProjectionManager.clearSplitRebootHint(ctx) },
+        nowMs = android.os.SystemClock::elapsedRealtime,
+        mediaSource = com.bydmate.app.split.ProductionMediaSessionSource(ctx),
+        applyCalibratedBounds = { taskId, displayId ->
+            com.bydmate.app.cluster.ClusterProjectionManager.applyCalibratedBoundsToTask(taskId, displayId, ctx, helper)
+        },
+        // W6-F1 FIX-B: end our own cluster projection of a pane app before the split places it,
+        // so the projection is not left reporting FULLSCREEN with an orphaned overlay/VD.
+        // Lock order SSM.mutex → CPM.mutex, same as applyCalibratedBounds.
+        endClusterProjection = { pkg ->
+            com.bydmate.app.cluster.ClusterProjectionManager.endProjectionForPkg(pkg, ctx, helper, bootstrap)
+        },
+        journal = journal,
+        // Alternative to our freeform split for firmwares that gate the freeform flag (#139).
+        // Only reached while the native-mode switch is on; off for the whole fleet by default.
+        nativeLauncher = com.bydmate.app.split.NativeSplitLauncher(ctx, journal),
+        // The firmware's own 3:7 split (OTA V1.6). isApplicable() is false on every other
+        // firmware, so this is inert for the rest of the fleet.
+        split37 = com.bydmate.app.split.Split37Engine(
+            helper = helper,
+            journal = journal,
+            nowMs = android.os.SystemClock::elapsedRealtime,
+            // Only an app the user could have started from a launcher is adopted into a pane. The
+            // engine asks on every tick for as long as a foreign package sits on top of the panes,
+            // so the PackageManager answer is remembered per package.
+            isLauncherApp = java.util.concurrent.ConcurrentHashMap<String, Boolean>().let { cache ->
+                { pkg: String ->
+                    cache.getOrPut(pkg) { ctx.packageManager.getLaunchIntentForPackage(pkg) != null }
+                }
+            },
+            ownPackage = ctx.packageName,
+        ),
+        // #139: BOOT_COUNT only moves on a real boot, so it is what proves the reboot the hint
+        // asked for has happened and freeform is still unavailable. -1 keeps the verdict inert.
+        verdict = com.bydmate.app.split.SplitFreeformVerdict(
+            ctx.getSharedPreferences(
+                com.bydmate.app.cluster.ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE,
+            ),
+            bootCount = {
+                runCatching {
+                    android.provider.Settings.Global.getInt(
+                        ctx.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1,
+                    )
+                }.getOrDefault(-1)
+            },
+        ),
+    ).also { mgr ->
+        // Wire departure-grace callback so ClusterProjectionManager can notify SplitSessionManager
+        // before a direct-projection cluster send (Q1 / F-1). onBeforeClusterSend lives on the
+        // process-level object (static); @Singleton ensures a single registration (no stale-ref risk).
+        // Lock order: CPM.mutex → [beginClusterSend lock-free] — no SSM.mutex acquired here.
+        com.bydmate.app.cluster.ClusterProjectionManager.onBeforeClusterSend = { pkg ->
+            mgr.beginClusterSend(pkg)
+        }
+        // F-1/D-3: release the departure grace when the whole projection pipeline terminates without
+        // placing the task on the cluster (terminal VD failures: surface timeout, createVd fail,
+        // launchAndForce=false, exception). UNAVAILABLE/FAILED from tryDirectProjection do NOT
+        // call this — grace must survive the VD-fallback which can run for up to ~22s total.
+        com.bydmate.app.cluster.ClusterProjectionManager.onClusterSendFailed = { pkg ->
+            mgr.endClusterSend(pkg)
+        }
+    }
 
 }

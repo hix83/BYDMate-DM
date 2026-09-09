@@ -9,6 +9,7 @@ import androidx.annotation.StringRes
 import com.bydmate.app.R
 import com.bydmate.app.util.appLocalizedContext
 import com.bydmate.app.data.automation.ActionValidationError
+import com.bydmate.app.data.automation.AutomationEngine
 import com.bydmate.app.data.automation.RuleDraftValidator
 import com.bydmate.app.data.automation.TriggerValidationError
 import com.bydmate.app.data.local.dao.RuleDao
@@ -73,7 +74,9 @@ fun ActionOption.localizedCategory(context: Context): String =
 val TRIGGER_PARAMS = listOf(
         TriggerParamOption("Speed", "车速", R.string.auto_param_speed, R.string.auto_cat_driving, R.string.auto_unit_kmh),
         TriggerParamOption("Gear", "档位", R.string.auto_param_gear, R.string.auto_cat_driving, enumValues = listOf("1" to R.string.auto_enum_code_p, "2" to R.string.auto_enum_code_r, "3" to R.string.auto_enum_code_n, "4" to R.string.auto_enum_code_d)),
-        TriggerParamOption("DriveMode", "整车运行模式", R.string.auto_param_drivemode, R.string.auto_cat_driving, enumValues = listOf("0" to R.string.auto_enum_code_normal, "1" to R.string.auto_enum_code_eco, "2" to R.string.auto_enum_code_sport, "4" to R.string.auto_enum_code_snow)),
+        TriggerParamOption("DriveMode", "整车运行模式", R.string.auto_param_drivemode, R.string.auto_cat_driving, enumValues = listOf("1" to R.string.auto_enum_code_eco, "2" to R.string.auto_enum_code_sport, "3" to R.string.auto_enum_code_normal, "4" to R.string.auto_enum_code_offroad)),
+        // Live codes (Leopard 3 2026-07-31): mask of the blinker lines, holds steady while blinking
+        TriggerParamOption("TurnSignal", "转向灯", R.string.auto_param_turnsignal, R.string.auto_cat_driving, enumValues = listOf("1" to R.string.auto_enum_turn_off, "2" to R.string.auto_enum_turn_left, "4" to R.string.auto_enum_turn_right, "6" to R.string.auto_enum_turn_hazard)),
         TriggerParamOption("SOC", "电量百分比", R.string.auto_param_soc, R.string.auto_cat_energy, R.string.auto_unit_percent),
         TriggerParamOption("ChargingStatus", "充电状态", R.string.auto_param_chargingstatus, R.string.auto_cat_energy, enumValues = listOf("0" to R.string.auto_enum_none, "1" to R.string.auto_enum_connected, "2" to R.string.auto_enum_charging)),
         TriggerParamOption("PowerState", "电源状态", R.string.auto_param_powerstate, R.string.auto_cat_energy, enumValues = listOf("0" to R.string.auto_enum_code_off, "1" to R.string.auto_enum_code_on, "2" to R.string.auto_enum_code_drive)),
@@ -182,6 +185,8 @@ val ACTION_COMMANDS = listOf(
         ActionOption("氛围灯关闭", R.string.auto_act_ambient_light_off, R.string.auto_cat_light),
         ActionOption("打开日行灯", R.string.auto_act_drl_on, R.string.auto_cat_light),
         ActionOption("关闭日行灯", R.string.auto_act_drl_off, R.string.auto_cat_light),
+        ActionOption("双闪打开", R.string.auto_act_hazard_on, R.string.auto_cat_light),
+        ActionOption("双闪关闭", R.string.auto_act_hazard_off, R.string.auto_cat_light),
         ActionOption("打开车内灯", R.string.auto_act_interior_light_on, R.string.auto_cat_light),
         ActionOption("关闭车内灯", R.string.auto_act_interior_light_off, R.string.auto_cat_light),
         ActionOption("车门上锁", R.string.auto_act_lock_doors, R.string.auto_cat_locks),
@@ -296,7 +301,7 @@ class AutomationViewModel @Inject constructor(
             // same safety gates explicitly (frunk/unlock fail closed on unknown speed).
             val block = ActionDispatcher.safetyBlockReason(command, TrackingService.lastData.value)
             if (block != null) {
-                Toast.makeText(context, block, Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, block.toText(context), Toast.LENGTH_SHORT).show()
                 return@launch
             }
             val result = vehicleApi.dispatch(command)
@@ -370,6 +375,10 @@ class AutomationViewModel @Inject constructor(
             is ActionValidationError.HotspotInvalid -> ctx.getString(R.string.auto_msg_hotspot_invalid, err.index)
             is ActionValidationError.SpeakTextEmpty -> ctx.getString(R.string.auto_msg_speak_text_empty, err.index)
             is ActionValidationError.AgentQueryPromptEmpty -> ctx.getString(R.string.auto_msg_agent_query_prompt_empty, err.index)
+            is ActionValidationError.SplitScreenNarrowEmpty -> ctx.getString(R.string.auto_msg_split_narrow_empty, err.index)
+            is ActionValidationError.SplitScreenWideEmpty -> ctx.getString(R.string.auto_msg_split_wide_empty, err.index)
+            is ActionValidationError.SplitScreenSamePackage -> ctx.getString(R.string.auto_msg_split_same_package, err.index)
+            is ActionValidationError.SplitScreenInvalidSide -> ctx.getString(R.string.auto_msg_split_invalid_side, err.index)
             null -> null
         }
     }
@@ -470,7 +479,7 @@ class AutomationViewModel @Inject constructor(
         if (prefs.getBoolean("templates_inserted", false)) return
 
         val lang = currentLang(context)
-        fun tName(zh: String, en: String, ru: String): String = when (lang) { "zh" -> zh; "en" -> en; else -> ru }
+        fun tName(zh: String, en: String, ru: String): String = when (lang) { "zh" -> zh; "ru", "be" -> ru; else -> en }
 
         val templates = listOf(
             RuleEntity(
@@ -805,6 +814,79 @@ fun ActionDef.withAgentPrompt(prompt: String): ActionDef = copy(
     payload = org.json.JSONObject().apply { put("prompt", prompt) }.toString()
 )
 
+// --- Split screen helpers ---
+
+fun newSplitScreenAction(context: Context): ActionDef = ActionDef(
+    command = "",
+    displayName = context.getString(R.string.auto_act_split_screen),
+    kind = "split_screen",
+    payload = """{"narrow":"","wide":"","narrowLabel":"","wideLabel":"","side":"right"}"""
+)
+
+/** "Close split screen" — no payload: the action always targets the running session. */
+fun newSplitScreenCloseAction(context: Context): ActionDef = ActionDef(
+    command = "",
+    displayName = context.getString(R.string.auto_act_split_screen_close),
+    kind = "split_screen_close",
+    payload = null
+)
+
+/** "Toggle split screen" — no payload: exits a running session, else restores the last pair. */
+fun newSplitScreenToggleAction(context: Context): ActionDef = ActionDef(
+    command = "",
+    displayName = context.getString(R.string.auto_act_split_screen_toggle),
+    kind = "split_screen_toggle",
+    payload = null
+)
+
+fun ActionDef.splitNarrowPkg(): String = try {
+    org.json.JSONObject(payload ?: "{}").optString("narrow")
+} catch (e: Exception) { "" }
+
+fun ActionDef.splitWidePkg(): String = try {
+    org.json.JSONObject(payload ?: "{}").optString("wide")
+} catch (e: Exception) { "" }
+
+fun ActionDef.splitNarrowLabel(): String = try {
+    org.json.JSONObject(payload ?: "{}").optString("narrowLabel")
+} catch (e: Exception) { "" }
+
+fun ActionDef.splitWideLabel(): String = try {
+    org.json.JSONObject(payload ?: "{}").optString("wideLabel")
+} catch (e: Exception) { "" }
+
+/** Returns the narrow-pane side: "left" or "right". Defaults to "right" when missing. */
+fun ActionDef.splitSide(): String = try {
+    org.json.JSONObject(payload ?: "{}").optString("side", "right").let {
+        if (it in listOf("left", "right")) it else "right"
+    }
+} catch (e: Exception) { "right" }
+
+fun ActionDef.withSplitScreen(
+    narrowPkg: String,
+    narrowLabel: String,
+    widePkg: String,
+    wideLabel: String,
+    side: String,
+): ActionDef {
+    val displayName = if (narrowLabel.isNotBlank() && wideLabel.isNotBlank()) {
+        "$narrowLabel / $wideLabel"
+    } else {
+        // Caller will resolve the localized default from context; use stable English here.
+        "Split Screen"
+    }
+    return copy(
+        displayName = displayName,
+        payload = org.json.JSONObject().apply {
+            put("narrow", narrowPkg)
+            put("wide", widePkg)
+            put("narrowLabel", narrowLabel)
+            put("wideLabel", wideLabel)
+            put("side", side)
+        }.toString()
+    )
+}
+
 /**
  * Pure list reorder used by the automation editor's up/down arrows: returns a new
  * list with the item at [index] swapped with its neighbour. No-op (returns the same
@@ -833,4 +915,19 @@ fun newButtonPressTrigger(buttonId: Int): TriggerDef = TriggerDef(
     value = buttonId.toString(),
     displayName = "Кнопка $buttonId",
     kind = "button_press",
+)
+
+/**
+ * Builds the "steering-wheel key" trigger. Shaped like [newButtonPressTrigger]: value holds the
+ * Android keycode as a string, displayName is the internal log label (the UI renders the localized
+ * button name). keyCode 0 means "not assigned yet" — the engine's keycode cache skips it, so a
+ * freshly added trigger claims no key until the user learns one.
+ */
+fun newSteeringKeyTrigger(keyCode: Int): TriggerDef = TriggerDef(
+    param = AutomationEngine.TRIGGER_PARAM_STEERING_KEY,
+    chineseName = "",
+    operator = "==",
+    value = keyCode.toString(),
+    displayName = "Клавиша $keyCode",
+    kind = AutomationEngine.TRIGGER_KIND_STEERING_KEY,
 )

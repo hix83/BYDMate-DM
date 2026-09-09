@@ -7,6 +7,8 @@ import com.bydmate.app.data.trips.TripResetState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,6 +33,9 @@ open class SettingsRepository @Inject constructor(
         const val KEY_FUEL_PRICE_PER_LITER = "fuel_price_per_liter"
         const val KEY_CONSUMPTION_GOOD = "consumption_good_threshold"
         const val KEY_CONSUMPTION_BAD = "consumption_bad_threshold"
+        /** "auto" (historical/live blend, default) or "manual" (user temperature table). */
+        const val KEY_RANGE_CALC_METHOD = "range_calc_method"
+        const val KEY_MANUAL_RANGE_TABLE = "manual_range_table_json"
         const val KEY_LAST_KNOWN_SOC = "last_known_soc"
         const val KEY_LAST_SOC_TIMESTAMP = "last_soc_timestamp"
         const val KEY_LAST_ENERGYDATA_IMPORT_TS = "last_energydata_import_ts"
@@ -39,6 +44,8 @@ open class SettingsRepository @Inject constructor(
         const val KEY_IDLE_DRAIN_CLEANUP_DONE = "idle_drain_cleanup_done"
         const val KEY_CONSUMPTION_RECALC_DONE = "consumption_recalc_done"
         const val KEY_IDLE_DRAIN_V2_CLEANUP = "idle_drain_v2_cleanup"
+        /** DriveMode trigger value "0" (old "NORMAL") rewritten to the real NORMAL code "3". */
+        const val KEY_DRIVEMODE_RULE_MIGRATION = "drivemode_rule_migration_v2"
         const val KEY_OPENROUTER_API_KEY = "openrouter_api_key"
         const val KEY_OPENROUTER_MODEL = "openrouter_model"
         /** Exa (api.exa.ai) BYOK for the web_search tool. Blank = openrouter:web_search server tool
@@ -50,6 +57,9 @@ open class SettingsRepository @Inject constructor(
         const val KEY_CUSTOM_BASE_URL = "custom_llm_base_url"
         const val KEY_CUSTOM_API_KEY = "custom_llm_api_key"
         const val KEY_CUSTOM_MODEL = "custom_llm_model"
+        /** Optional JSON object merged into every chat-completions body of the custom connection
+         *  (e.g. {"thinking": false} to switch off reasoning). Blank = nothing extra. */
+        const val KEY_CUSTOM_EXTRA_JSON = "custom_llm_extra_json"
         /** "openrouter" | "zai" | "custom"; blank = openrouter (pre-wave-J default). */
         const val KEY_AGENT_PRIMARY_CONN = "agent_primary_conn"
         /** Same values; blank = no fallback. */
@@ -69,6 +79,14 @@ open class SettingsRepository @Inject constructor(
         const val KEY_PARKING_CAMERAS = "parking_cameras"
         /** Отправлять GPS-координаты и курс в телеметрию ABRP (opt-in, по умолчанию выкл). */
         const val KEY_ABRP_SEND_LOCATION = "abrp_send_location"
+        /** Слать тот же JSON телеметрии POST-запросом на свой URL. Работает независимо от ABRP. */
+        const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
+        /** URL вебхука (http/https). Пустой = вебхук выключен, даже если KEY_WEBHOOK_ENABLED="true". */
+        const val KEY_WEBHOOK_URL = "webhook_url"
+        /** Необязательный секрет; уходит заголовком `Authorization: Bearer`. */
+        const val KEY_WEBHOOK_SECRET = "webhook_secret"
+        /** Отправлять GPS-координаты и курс на вебхук (opt-in, по умолчанию выкл). */
+        const val KEY_WEBHOOK_SEND_LOCATION = "webhook_send_location"
         const val KEY_DATA_SOURCE = "data_source"
         const val KEY_VEHICLE_PROFILE = "vehicle_profile"
         const val KEY_MAP_TILE_SOURCE = "map_tile_source"
@@ -123,6 +141,22 @@ open class SettingsRepository @Inject constructor(
         const val DEFAULT_VEHICLE_PROFILE = "SONG_L_DMI_112"
         const val DEFAULT_PARKING_CAMERA_URL = "https://parking.napaster.ru"
         const val DEFAULT_MAP_TILE_SOURCE = "osm" // "osm" or "amap"
+        const val RANGE_CALC_AUTO = "auto"
+        const val RANGE_CALC_MANUAL = "manual"
+        const val DEFAULT_RANGE_CALC_METHOD = RANGE_CALC_AUTO
+
+        /** Consumption defaults ported from the nordpool1hprices companion app's BYD Atto 3
+         *  reference table (kWh/km converted to kWh/100km to match this app's existing
+         *  consumption unit). The range-at-100%-SOC column is left empty on purpose: the
+         *  Atto 3 figures imply a ~57 kWh pack and would silently override the user's own
+         *  battery capacity setting on every other vehicle. */
+        fun defaultManualRangeTable(): List<ManualRangePoint> = listOf(
+            ManualRangePoint(20, 16.3),
+            ManualRangePoint(10, 18.5),
+            ManualRangePoint(0, 20.6),
+            ManualRangePoint(-10, 25.0),
+            ManualRangePoint(-20, 27.2),
+        )
 
         val CURRENCIES = listOf(
             Currency("BYN", "BYN"),
@@ -131,6 +165,7 @@ open class SettingsRepository @Inject constructor(
             Currency("KZT", "₸"),
             Currency("USD", "$"),
             Currency("EUR", "€"),
+            Currency("PLN", "zł"),
             Currency("CNY", "¥"),
             Currency("UZS", "UZS"),
         )
@@ -312,6 +347,17 @@ open class SettingsRepository @Inject constructor(
         val note: String
     )
 
+    /**
+     * One row of the user-editable manual range table: consumption (and optionally the
+     * vehicle's own 100%-SOC range) at a reference temperature. [ManualRangeCalculator]
+     * interpolates between rows for the vehicle's current average battery temperature.
+     */
+    data class ManualRangePoint(
+        val temperatureC: Int,
+        val consumptionKwhPer100Km: Double,
+        val rangeKmAt100Soc: Double? = null,
+    )
+
     suspend fun getString(key: String, default: String): String =
         settingsDao.get(key) ?: default
 
@@ -370,6 +416,47 @@ open class SettingsRepository @Inject constructor(
             it?.parseNumericSetting() ?: DEFAULT_CONSUMPTION_BAD.toDouble()
         },
     ) { good, bad -> good to bad }
+
+    suspend fun getRangeCalcMethod(): String =
+        getString(KEY_RANGE_CALC_METHOD, DEFAULT_RANGE_CALC_METHOD)
+
+    suspend fun setRangeCalcMethod(value: String) =
+        setString(KEY_RANGE_CALC_METHOD, value)
+
+    fun observeRangeCalcMethod(): Flow<String> =
+        observeString(KEY_RANGE_CALC_METHOD).map { it ?: DEFAULT_RANGE_CALC_METHOD }
+
+    private fun manualRangePointToJson(p: ManualRangePoint): JSONObject = JSONObject().apply {
+        put("temperatureC", p.temperatureC)
+        put("consumptionKwhPer100Km", p.consumptionKwhPer100Km)
+        put("rangeKmAt100Soc", p.rangeKmAt100Soc ?: JSONObject.NULL)
+    }
+
+    private fun manualRangePointFromJson(o: JSONObject): ManualRangePoint = ManualRangePoint(
+        temperatureC = o.getInt("temperatureC"),
+        consumptionKwhPer100Km = o.getDouble("consumptionKwhPer100Km"),
+        rangeKmAt100Soc = if (o.isNull("rangeKmAt100Soc")) null else o.getDouble("rangeKmAt100Soc"),
+    )
+
+    suspend fun getManualRangeTable(): List<ManualRangePoint> {
+        val raw = getString(KEY_MANUAL_RANGE_TABLE, "")
+        if (raw.isBlank()) return defaultManualRangeTable()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i -> manualRangePointFromJson(arr.getJSONObject(i)) }
+                .ifEmpty { defaultManualRangeTable() }
+        } catch (_: Exception) {
+            defaultManualRangeTable()
+        }
+    }
+
+    suspend fun setManualRangeTable(points: List<ManualRangePoint>) {
+        val arr = JSONArray()
+        points.sortedByDescending { it.temperatureC }.forEach { arr.put(manualRangePointToJson(it)) }
+        setString(KEY_MANUAL_RANGE_TABLE, arr.toString())
+    }
+
+    suspend fun resetManualRangeTable() = setManualRangeTable(defaultManualRangeTable())
 
     suspend fun saveLastKnownSoc(soc: Int) {
         setString(KEY_LAST_KNOWN_SOC, soc.toString())
@@ -434,6 +521,12 @@ open class SettingsRepository @Inject constructor(
 
     suspend fun setDataSource(source: DataSource) =
         setString(KEY_DATA_SOURCE, source.name)
+
+    suspend fun isDriveModeRuleMigrationDone(): Boolean =
+        getString(KEY_DRIVEMODE_RULE_MIGRATION, "false") == "true"
+
+    suspend fun setDriveModeRuleMigrationDone() =
+        setString(KEY_DRIVEMODE_RULE_MIGRATION, "true")
 
     fun observeDataSource(): Flow<String?> = observeString(KEY_DATA_SOURCE)
 

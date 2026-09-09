@@ -79,3 +79,41 @@ fun voiceDecision(keyCode: Int, isDown: Boolean, voiceEnabled: Boolean, voiceKey
     if (!voiceEnabled || keyCode != voiceKeyCode) return VoiceKeyDecision.IGNORE
     return if (isDown) VoiceKeyDecision.TRIGGER else VoiceKeyDecision.CONSUME
 }
+
+/**
+ * Volume-knob PRESS on the steering wheel (KEYCODE_AUTO_MEDIA_PLAY_PAUSE). On firmware V1.6
+ * (2026-05) PhoneWindowManager routes this code to the stock MediaKeyHandler, which hands
+ * play/pause only to the current audio-focus owner; for anyone else com.byd.mediacenter takes it
+ * and switches the audio SOURCE instead. Intercepting it here restores play/pause for the app
+ * that actually owns a MediaSession.
+ */
+const val VOLUME_KNOB_PRESS_KEYCODE = 353
+
+/** What the a11y filter should do with a volume-knob press. */
+enum class KnobDecision { CONSUME_AND_PLAY_PAUSE, CONSUME, PASS_THROUGH }
+
+/**
+ * Pure gate for the volume-knob press, shaped like [starDecision].
+ * - feature off, or any key other than [VOLUME_KNOB_PRESS_KEYCODE] → PASS_THROUGH (native intact).
+ * - knob key, enabled: CONSUME_AND_PLAY_PAUSE on the DOWN edge, CONSUME on the UP edge (so the
+ *   native source switch never fires on either edge).
+ */
+fun knobDecision(keyCode: Int, isDown: Boolean, enabled: Boolean): KnobDecision {
+    if (!enabled || keyCode != VOLUME_KNOB_PRESS_KEYCODE) return KnobDecision.PASS_THROUGH
+    return if (isDown) KnobDecision.CONSUME_AND_PLAY_PAUSE else KnobDecision.CONSUME
+}
+
+/** What the a11y filter should do with a key bound to an automation rule. */
+enum class SteeringKeyDecision { FIRE, CONSUME, PASS_THROUGH }
+
+/**
+ * Pure gate for a steering-wheel key the user bound to an automation rule (trigger kind
+ * `steering_key`). [assigned] comes from the engine's cached keycode set.
+ * - not assigned → PASS_THROUGH (native function intact).
+ * - assigned: FIRE on the DOWN edge (run the rules once), CONSUME on the UP edge so the
+ *   native short action never fires — same edge split as [starDecision].
+ */
+fun steeringKeyDecision(keyCode: Int, isDown: Boolean, assigned: Boolean): SteeringKeyDecision {
+    if (!assigned) return SteeringKeyDecision.PASS_THROUGH
+    return if (isDown) SteeringKeyDecision.FIRE else SteeringKeyDecision.CONSUME
+}

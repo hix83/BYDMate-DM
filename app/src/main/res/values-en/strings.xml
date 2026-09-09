@@ -11,13 +11,23 @@
     <string name="settings_section_parking_camera_title">Parking camera</string>
     <string name="settings_section_display_title">Display</string>
     <!-- Settings: Display section (cluster projection) -->
+    <string name="settings_display_state_on">On</string>
+    <string name="settings_display_state_off">Off</string>
+    <string name="settings_display_card_mirror_title">Cluster projection</string>
+    <string name="settings_display_card_mirror_sub">Navigator via a steering-wheel button. %1$s</string>
+    <string name="settings_display_card_mirror_sub_app">Navigator via a steering-wheel button. %1$s, %2$s</string>
+    <string name="settings_display_card_hud_title">Windshield projection (HUD)</string>
+    <string name="settings_display_card_hud_sub">Navigator guidance on the factory HUD. %1$s</string>
+    <string name="settings_display_card_blindspot_sub">Camera on turn signal. %1$s</string>
+    <string name="settings_display_window_subhead">Cluster window</string>
     <string name="cluster_a11y_description">Intercepts steering-wheel buttons to project navigation onto the instrument cluster. Enabled manually, works only when the feature is on.</string>
     <string name="settings_display_mirror_header">Projection to cluster</string>
     <string name="settings_display_mirror_title">Projection to cluster via wheel button</string>
     <string name="settings_display_mirror_desc">A short press of the chosen steering-wheel button moves the selected app to the cluster and back.</string>
     <string name="settings_cluster_auto_container_title">Show on the cluster right away</string>
-    <string name="settings_cluster_auto_container_desc">Switch the cluster into projection mode automatically</string>
+    <string name="settings_cluster_auto_container_desc">The app switches the cluster into projection mode and back by itself (navigator and blind-spot cameras). Turn it off if ADAS or the stock widget disappears from the cluster afterwards and does not come back on its own: then switch the cluster mode manually, the picture shows in the mini-map</string>
     <string name="settings_cluster_direct_reboot_hint">For the voice agent to see the navigator on the cluster, reboot the DiLink head unit once: press and hold the volume knob. Simply turning the car off is not enough. Until the reboot projection still works, but the agent cannot see the route.</string>
+    <string name="cluster_direct_unsupported_hint">Direct output is not available on this car\'s firmware, a compatible mode is used</string>
     <string name="settings_projection_mode_title">Projection mode</string>
     <string name="settings_projection_mode_direct">Extended</string>
     <string name="settings_projection_mode_vd">Factory</string>
@@ -38,6 +48,7 @@
     <string name="settings_display_offset_y_desc">Window position: 0 - top, 50 - center, 100 - bottom</string>
     <string name="settings_display_scale">Scale</string>
     <string name="settings_display_scale_desc">UI size: lower value - smaller elements and more map in the window</string>
+    <string name="settings_display_scale_direct_hint">Scale applies only in the Factory projection mode. In Extended the app always renders at its native size.</string>
     <!-- Steering-wheel button names (cluster trigger picker) -->
     <string name="steering_button_right_star">Right star</string>
     <string name="steering_button_left_star">Left star</string>
@@ -58,6 +69,15 @@
     <string name="learn_button_save">Save</string>
     <string name="learn_button_again">Again</string>
     <string name="learn_button_cancel">Cancel</string>
+    <!-- Volume knob on the steering wheel: play/pause instead of audio-source switch -->
+    <string name="settings_knob_play_pause_title">Steering wheel volume knob</string>
+    <string name="settings_knob_play_pause_desc">Pressing the knob pauses and resumes playback instead of switching the audio source. Needed after the firmware update that made the press change the source.</string>
+    <!-- Car system section: BYD head unit settings, not app settings -->
+    <string name="settings_car_system_header">Car system</string>
+    <string name="settings_car_language_title">Car interface language</string>
+    <string name="settings_car_language_desc">For UI7 firmware only. The button opens the hidden factory BYD dialog with the full list of languages. To switch to Russian: pick \"Русский язык\", then OK. To switch back: same button, \"English\", OK. Note: with Russian selected, automatic parking stops working for some owners. If you use automatic parking, keep English.</string>
+    <string name="settings_car_language_button">Open language picker</string>
+    <string name="settings_car_language_unavailable">The language dialog is not available on this firmware</string>
     <string name="settings_section_places_title">Places</string>
     <string name="settings_section_application_title">Application</string>
     <string name="settings_smart_home_section_title">Smart home</string>
@@ -74,6 +94,23 @@
     <string name="settings_consumption_section_header">Consumption thresholds</string>
     <string name="settings_consumption_good_label">Good &lt; (kWh/100km)</string>
     <string name="settings_consumption_bad_label">Bad &gt; (kWh/100km)</string>
+
+    <!-- Settings: Range calculation method (Auto = learned history, Manual = user table) -->
+    <string name="settings_range_calc_section_header">Range calculation method</string>
+    <string name="settings_range_calc_method_label">Calculation method</string>
+    <string name="settings_range_calc_auto">Auto</string>
+    <string name="settings_range_calc_manual">Manual</string>
+    <string name="settings_range_calc_method_desc">\"Auto\" uses trip history and live consumption. \"Manual\" uses your own battery-temperature-based consumption table.</string>
+    <string name="settings_range_calc_edit_table_button">Consumption table</string>
+    <string name="settings_range_calc_edit_table_desc" formatted="false">5 points: battery temperature → consumption (and optionally range at 100% charge)</string>
+    <string name="range_table_dialog_title">Battery temperature consumption table</string>
+    <string name="range_table_dialog_note1" formatted="false">Consumption (kWh/100km) is required; range at 100% charge is optional, but must be filled in for every row or left empty in all of them.</string>
+    <string name="range_table_dialog_col_temp">°C</string>
+    <string name="range_table_dialog_col_consumption">Consumption, kWh/100km</string>
+    <string name="range_table_dialog_col_range">Range, km</string>
+    <string name="range_table_dialog_reset">Reset to defaults</string>
+    <string name="range_table_dialog_cancel">Cancel</string>
+    <string name="range_table_dialog_save">Save</string>
 
     <!-- Settings: Trips section -->
     <string name="settings_trips_datasource_header">Trip data source</string>
@@ -113,6 +150,16 @@
     <string name="settings_parking_gate_add_button">Add gate</string>
     <string name="settings_delete_button">Delete</string>
     <string name="settings_ai_section_header">AI Insights</string>
+    <string name="settings_webhook_section_header">Webhook - telemetry</string>
+    <string name="settings_webhook_label">Live data -> your own server</string>
+    <string name="settings_webhook_description">The same JSON that goes to ABRP (SOC, power, temperatures, odometer, tire pressure, charging) is sent as a POST request to your URL: once per second while driving, once every 8 seconds while charging, once every 30 seconds while parked. Coordinates are not sent by default.</string>
+    <string name="settings_webhook_url_label">URL (https://)</string>
+    <string name="settings_webhook_secret_label">Secret (Authorization: Bearer header), optional</string>
+    <string name="settings_webhook_location_label">Send coordinates to the webhook</string>
+    <string name="settings_webhook_location_description">Adds the car GPS position and heading to the JSON.</string>
+    <string name="settings_webhook_save_button">Save webhook</string>
+    <string name="settings_webhook_saved">Webhook saved</string>
+    <string name="settings_webhook_invalid_url">Invalid URL</string>
     <string name="settings_openrouter_section_header">OpenRouter</string>
     <string name="settings_openrouter_api_key_label">OpenRouter API Key</string>
     <string name="settings_openrouter_model_selected">Model: %1$s</string>
@@ -127,6 +174,10 @@
     <string name="settings_widget_hints">- Long tap the widget - hide until BYDMate is opened next time.\n- Drag to the bin at the bottom - turn off completely.\n- Regular tap - open BYDMate.</string>
     <string name="settings_widget_hide_youtube_label">Hide over YouTube</string>
     <string name="settings_widget_hide_youtube_description">The button panel hides while YouTube is on screen</string>
+    <string name="settings_widget_hide_apps_label">Hide in apps</string>
+    <string name="settings_widget_hide_apps_description">The button panel hides while a selected app is on screen</string>
+    <string name="settings_widget_hide_apps_none">Not selected</string>
+    <string name="settings_widget_hide_apps_count">Selected: %1$d</string>
     <string name="settings_widget_reset_position_button">Reset position</string>
     <string name="settings_reset_seat_channel">Reset seat channel</string>
     <string name="settings_reset_seat_channel_hint">If seat heating or ventilation stops working after switching cars</string>
@@ -136,7 +187,7 @@
     <string name="orb_agent">Agent:</string>
     <string name="settings_voice_native_assistant_header">Native BYD voice assistant</string>
     <string name="settings_voice_disable_native_label">Disable built-in voice assistant</string>
-    <string name="settings_voice_disable_native_description">Hides the native BYD voice assistant so it does not interrupt. Reversible.</string>
+    <string name="settings_voice_disable_native_description">Hides the native BYD voice assistant so it does not interrupt. The Shortcuts app (quick commands) disappears with it, it is part of the assistant. Reversible: turn the toggle off and restart the head unit, both come back.</string>
     <string name="settings_voice_native_assistant_reboot_note">Takes effect after restarting the head unit.</string>
     <string name="settings_widget_opacity_label">Opacity</string>
     <string name="settings_widget_scale_label">Size</string>
@@ -316,6 +367,13 @@
     <string name="automation_trigger_type_button_press">Button press</string>
     <string name="automation_trigger_button_label">Button %1$d</string>
     <string name="automation_trigger_button_picker_label">Button</string>
+    <string name="automation_trigger_type_steering_key">Steering-wheel key</string>
+    <string name="automation_trigger_steering_key_picker_label">Steering-wheel key</string>
+    <string name="automation_trigger_steering_key_unassigned">Key not assigned</string>
+    <string name="automation_trigger_steering_key_assign">assign</string>
+    <string name="automation_steering_key_occupied_projection">This key turns navigation on the instrument cluster on. Free it up in Settings, Display section, or pick another one.</string>
+    <string name="automation_steering_key_occupied_voice">This key calls the BYDMate voice assistant. Change the key in Settings, Voice agent section, or pick another one.</string>
+    <string name="automation_steering_key_occupied_knob">The knob press is taken by play/pause. Turn it off in Settings, Display section, or pick another key.</string>
     <string name="automation_trigger_type_voice">Voice</string>
     <string name="automation_trigger_voice_phrase_label">Trigger phrase</string>
     <string name="automation_voice_phrase_empty">Voice phrase is empty</string>
@@ -343,6 +401,8 @@
     <string name="automation_delay_3s">3 s</string>
     <string name="automation_delay_5s">5 s</string>
     <string name="automation_delay_10s">10 s</string>
+    <string name="automation_delay_30s">30 s</string>
+    <string name="automation_delay_60s">1 min</string>
     <string name="automation_delay_display_name">Delay %1$s</string>
     <string name="automation_add_action_button">+ Add action</string>
     <string name="automation_action_dplus_command">Vehicle command</string>
@@ -538,12 +598,8 @@
     <string name="applauncher_empty">Nothing found</string>
     <string name="applauncher_close_button">Close</string>
     <string name="battery_health_charging_cd">Charging</string>
-    <string name="battery_health_dialog_title">Battery health</string>
-    <string name="battery_health_now_header">Now (from car, live)</string>
-    <string name="battery_health_lifetime_header">Lifetime (system data)</string>
     <string name="battery_health_cell_delta_label">Cell delta</string>
     <string name="battery_health_cell_delta_value">%1$.3f V</string>
-    <string name="battery_health_banks_header">Banks</string>
     <string name="battery_health_cell_voltage_value">%1$.3f V</string>
     <string name="battery_health_bat_temp_label">battery temp.</string>
     <string name="battery_health_12v_label">12V system</string>
@@ -552,9 +608,6 @@
     <string name="battery_health_bms_mileage_value">%1$.1f km</string>
     <string name="battery_health_pumped_label">pumped</string>
     <string name="battery_health_pumped_value">%1$.0f kWh</string>
-    <string name="battery_health_disabled_title">System data disabled</string>
-    <string name="battery_health_disabled_hint">Enable \"System data\" in Settings to see SoH, BMS mileage, and total pumped from the car.</string>
-    <string name="battery_health_avg_soc_header">Average SOC (BYDMate history)</string>
     <string name="battery_health_avg_since_charge_label">since last charge</string>
     <string name="battery_health_avg_all_time_label">all time</string>
     <string name="battery_health_avg_soc_hint" formatted="false">Time-weighted state of charge: the longer the battery sits charged, the higher the value. BYD LFP packs age slower when kept lower: storing at a high charge speeds up calendar aging. Guideline: below 65% is great, 65-85% is fine, above 85% consider charging later or less often. A 100% charge once every 1-2 weeks is still needed for cell balancing. Computed from BYDMate trip and charge history.</string>
@@ -585,7 +638,7 @@
     <string name="update_downloading_paused">Paused...</string>
     <string name="update_download_error">Download error (code %1$d)</string>
     <string name="update_download_notification_description">BYDMate update</string>
-    <string name="update_downloading_start">Downloading: 0%%</string>
+    <string name="update_downloading_start" formatted="false">Downloading: 0%</string>
     <string name="charges_day_today">today (%1$s)</string>
     <string name="charges_day_yesterday">yesterday</string>
 
@@ -692,6 +745,15 @@
     <string name="settings_config_export_confirm_title">Export configuration?</string>
     <string name="settings_config_export_confirm_body">The backup contains your trip history with GPS routes and your API keys in plain text. The file is saved to the public Download folder. Keep it somewhere safe and do not share it.</string>
     <string name="settings_config_export_confirm_ok">Export</string>
+    <!-- Fid catalog dump (Task O) -->
+    <string name="settings_fid_dump_button">Save fid catalog</string>
+    <string name="settings_fid_dump_desc">SDK constant names and values. Technical identifiers only: no VIN, no location, no personal data</string>
+    <string name="settings_fid_dump_saved">Saved: %1$s</string>
+    <string name="settings_fid_dump_in_progress">Reading fids...</string>
+    <string name="settings_fid_dump_empty">Fid catalog is empty on this firmware</string>
+    <string name="settings_fid_dump_error_unavailable">daemon unavailable</string>
+    <!-- %1$s = short technical detail, e.g. "status=-1 at chunk 0" or "transact failed at chunk 2" -->
+    <string name="settings_fid_dump_error_read">read error: %1$s</string>
     <!-- ==== Automation i18n (systematized) ==== -->
     <!-- categories -->
     <string name="auto_cat_body">Body</string>
@@ -727,6 +789,7 @@
     <string name="auto_enum_code_n">N</string>
     <string name="auto_enum_code_normal">NORMAL</string>
     <string name="auto_enum_code_off">OFF</string>
+    <string name="auto_enum_code_offroad">OFF-ROAD</string>
     <string name="auto_enum_code_on">ON</string>
     <string name="auto_enum_code_p">P</string>
     <string name="auto_enum_code_r">R</string>
@@ -744,6 +807,10 @@
     <string name="auto_enum_open_f">Open</string>
     <string name="auto_enum_open_m">Open</string>
     <string name="auto_enum_recirc">Recirculation</string>
+    <string name="auto_enum_turn_off">Off</string>
+    <string name="auto_enum_turn_left">Left</string>
+    <string name="auto_enum_turn_right">Right</string>
+    <string name="auto_enum_turn_hazard">Hazard</string>
     <string name="auto_enum_unfastened">Unfastened</string>
     <string name="auto_enum_unlocked">Unlocked</string>
     <!-- trigger param names -->
@@ -791,6 +858,7 @@
     <string name="auto_param_rain">Rain Sensor</string>
     <string name="auto_param_lightlow">Low Beam</string>
     <string name="auto_param_drl">DRL</string>
+    <string name="auto_param_turnsignal">Turn signal</string>
     <!-- action names -->
     <string name="auto_act_vent_windows">Vent Windows</string>
     <string name="auto_act_close_all_windows">Close All Windows</string>
@@ -855,6 +923,8 @@
     <string name="auto_act_ambient_light_off">Ambient Light Off</string>
     <string name="auto_act_drl_on">DRL On</string>
     <string name="auto_act_drl_off">DRL Off</string>
+    <string name="auto_act_hazard_on">Hazard lights: on</string>
+    <string name="auto_act_hazard_off">Hazard lights: off</string>
     <string name="auto_act_interior_light_on">Interior Light On</string>
     <string name="auto_act_interior_light_off">Interior Light Off</string>
     <string name="auto_act_lock_doors">Lock Doors</string>
@@ -920,6 +990,15 @@
     <string name="auto_a11y_move_up">Move up</string>
     <string name="auto_a11y_move_down">Move down</string>
     <string name="auto_a11y_run_now">Run now</string>
+    <!-- safety gate block reasons (ActionDispatcher.BlockReason) -->
+    <string name="gate_speed_unknown">Speed unknown</string>
+    <string name="gate_sunroof_speed">Sunroof opening blocked at %1$d km/h (&gt;80)</string>
+    <string name="gate_windows_speed">Window opening blocked at %1$d km/h (&gt;120)</string>
+    <string name="gate_unlock_speed_unknown">Speed unknown, doors stay locked</string>
+    <string name="gate_unlock_speed">Door unlocking blocked at %1$d km/h (&gt;30)</string>
+    <string name="gate_forbidden_command">Forbidden command</string>
+    <string name="gate_frunk_speed_unknown">Speed unknown, cannot open the front trunk</string>
+    <string name="gate_frunk_moving">The front trunk opens only when parked (speed %1$d km/h)</string>
 
     <!-- Voice control (Phase 0) -->
     <string name="settings_section_voice_agent">Voice agent</string>
@@ -931,6 +1010,7 @@
     <string name="voice_thinking">Thinking</string>
     <string name="voice_error_model_missing">Voice model is not downloaded. Get it in Settings, Voice agent section.</string>
     <string name="voice_error_lang_not_ru">Voice commands understand Russian speech only. Set Voice language to Russian in Settings.</string>
+    <string name="voice_block_park_required">Park required</string>
 
     <!-- GigaAM v3: free-form Russian speech recognition (offline) -->
     <string name="settings_asr_gigaam_title">Speech recognition</string>
@@ -1011,6 +1091,10 @@
     <string name="settings_agent_gender_male">Male</string>
     <string name="settings_agent_gender_female">Female</string>
     <string name="settings_agent_gender_hint">Applies to all voices: each source has a male and a female option</string>
+    <string name="settings_agent_memory_title">Driver memory</string>
+    <string name="settings_agent_memory_hint">The agent remembers your name and lasting preferences when you tell it to. Say “forget …” to drop a single fact</string>
+    <string name="settings_agent_memory_empty">Nothing remembered yet</string>
+    <string name="settings_agent_memory_forget_all">Forget everything</string>
 
     <!-- Voice agent (Phase 1) -->
     <string name="agent_enable_title">Voice AI agent</string>
@@ -1039,6 +1123,9 @@
     <string name="settings_conn_checking">Checking…</string>
     <string name="settings_zai_hint">Free glm-4.7-flash, recommended as the primary model</string>
     <string name="settings_custom_hint">Any OpenAI-compatible API. A preset fills in the URL and model, bring your own key.</string>
+    <string name="settings_custom_extra_json_label">Extra request parameters (JSON)</string>
+    <string name="settings_custom_extra_json_hint">Merged into every request to this server, for example {\"thinking\": false} to switch reasoning off</string>
+    <string name="settings_custom_extra_json_invalid">Invalid JSON</string>
     <string name="settings_custom_list_models">Model list</string>
     <string name="settings_error_dns">Server unreachable: the car\'s internet cannot resolve this address (DNS)</string>
     <string name="settings_error_timeout">Server did not respond in time</string>
@@ -1069,6 +1156,8 @@
     <string name="settings_widget_reset_position_desc">Return the widget to its default position</string>
     <string name="settings_export_csv_desc">Full trip history as one file in the Download folder</string>
     <string name="settings_log_recording_desc">Detailed activity log for troubleshooting. Enable when the developer asks for it</string>
+    <string name="settings_quiet_notification_title">Quiet tracking notification</string>
+    <string name="settings_quiet_notification_desc">The BYDMate notification moves to the collapsed silent list with no status bar icon. It cannot be removed entirely: Android requires a notification for background work</string>
     <string name="settings_config_export_desc">Backup: trip history with GPS and API keys in plain text, file in the Download folder</string>
     <string name="settings_config_restore_desc">Current data and settings will be fully replaced with the backup contents</string>
     <string name="settings_autostart_header">Autostart</string>
@@ -1106,6 +1195,135 @@
     <string name="settings_hud_status_on">Streaming to the HUD</string>
     <string name="settings_hud_status_bind_failed">Could not connect to the SOME/IP bus</string>
     <string name="settings_hud_hint">Requires a trim with the head-up display. Data comes from the Yandex Navigator window</string>
+    <!-- Blind-spot cameras -->
+    <string name="settings_blindspot_header">Blind spots</string>
+    <string name="settings_blindspot_title">Camera on turn signal</string>
+    <string name="settings_blindspot_desc">Left turn signal - left camera on the cluster, right one - a small window on the main screen. Off by default.</string>
+    <string name="settings_blindspot_threshold_title">Speed threshold</string>
+    <string name="settings_blindspot_threshold_desc">Below this speed the camera stays hidden</string>
+    <string name="settings_blindspot_pip_width_title">Window width</string>
+    <string name="settings_blindspot_pip_width_desc">Width of the main-screen window as % of the screen width</string>
+    <string name="settings_blindspot_position_title">Window position</string>
+    <string name="settings_blindspot_position_desc">Shows an empty window on top of the screen: drag it with a finger to where the camera should be</string>
+    <string name="settings_blindspot_position_button">Adjust position</string>
+    <string name="settings_blindspot_position_done">Done</string>
+    <string name="settings_blindspot_position_drag">Drag the window</string>
+    <string name="settings_blindspot_both_main_title">Both cameras on the main screen</string>
+    <string name="settings_blindspot_both_main_desc">The left camera is shown next to the right one on the tablet, the instrument cluster is not used</string>
+    <string name="settings_blindspot_glow_title">Highlight when an object is in the blind spot</string>
+    <string name="settings_blindspot_glow_desc">Orange border around the window while the sensor sees a car alongside</string>
+    <string name="settings_blindspot_hint">Requires a trim with surround-view cameras. When the cluster projection is not available, the window works on the main screen.</string>
     <string name="settings_secret_show">Show key</string>
     <string name="settings_secret_hide">Hide key</string>
+
+    <!-- Split-screen pill menu -->
+    <string name="split_menu_mirror">Switch sides</string>
+    <string name="split_menu_swap">Swap apps</string>
+    <string name="split_menu_pick_left">App on the left…</string>
+    <string name="split_menu_pick_right">App on the right…</string>
+    <string name="split_menu_exit">Exit</string>
+    <string name="split_picker_title_change">Choose an app</string>
+    <string name="split_picker_title_left">Choose an app for the left pane</string>
+    <string name="split_picker_title_right">Choose an app for the right pane</string>
+    <string name="split_picker_title_wide">Choose an app for the wide pane (2/3)</string>
+    <string name="split_picker_title_narrow">Choose an app for the narrow pane (1/3)</string>
+    <string name="split_freeform_reboot_hint">Split screen will activate after restarting the car</string>
+    <string name="split_freeform_unsupported_hint">Split screen is not available on this car\'s firmware</string>
+    <string name="split_launch_failed">Failed to launch split screen</string>
+    <string name="split_launch_failed_adb">Failed to launch split screen: unlocked ADB is required</string>
+    <!-- Automation action: split_screen -->
+    <string name="automation_action_split_screen">Split Screen</string>
+    <string name="auto_act_split_screen">Split Screen</string>
+    <!-- Automation actions: split_screen_close / split_screen_toggle (no payload) -->
+    <string name="automation_action_split_screen_close">Close Split Screen</string>
+    <string name="auto_act_split_screen_close">Close Split Screen</string>
+    <string name="automation_action_split_screen_toggle">Toggle Split Screen</string>
+    <string name="auto_act_split_screen_toggle">Toggle Split Screen</string>
+    <string name="split_action_narrow_label">App 1/3</string>
+    <string name="split_action_wide_label">App 2/3</string>
+    <string name="split_action_side_left">1/3 left</string>
+    <string name="split_action_side_right">1/3 right</string>
+    <string name="split_action_tap_to_configure">Pick apps</string>
+    <string name="auto_msg_split_narrow_empty">Action #%1$d: app 1/3 not selected</string>
+    <string name="auto_msg_split_wide_empty">Action #%1$d: app 2/3 not selected</string>
+    <string name="auto_msg_split_same_package">Action #%1$d: both apps must be different</string>
+    <string name="auto_msg_split_invalid_side">Action #%1$d: side must be left or right</string>
+    <string name="settings_widget_left_tap_mode_label">Left tap action</string>
+    <string name="settings_widget_left_tap_mode_app">Launch app</string>
+    <string name="settings_widget_left_tap_mode_split">Launch split screen</string>
+    <!-- Split-screen settings section -->
+    <string name="settings_section_split_title">Split screen</string>
+    <string name="settings_split_enable_title">Split screen 1/3 + 2/3</string>
+    <string name="settings_split_enable_desc">Two freeform windows: one at one-third of the screen, the other at two-thirds. Off by default.</string>
+    <string name="settings_split_clear_pair_title">Reset last pair</string>
+    <string name="settings_split_clear_pair_desc">Clear the saved app pair. The next launch will open the picker.</string>
+    <string name="settings_split_pair_cleared">Pair cleared</string>
+    <string name="settings_split_wide_app_title">Wide pane (2/3)</string>
+    <string name="settings_split_narrow_app_title">Narrow pane (1/3)</string>
+    <string name="settings_split_app_not_selected">not selected</string>
+    <string name="settings_split_howto_body">There are three ways to turn on split screen.\nThe easiest one: tap the left third of the floating widget. To set that up, turn on Tap zoning in the Widget tap section and pick Launch split screen under Left tap action.\nFrom automations: add the Split Screen action to a rule. Close Split Screen and Toggle Split Screen sit right next to it.\nBy voice: just ask the Voice agent to turn on split screen.</string>
+
+    <string name="settings_split_mechanism_title">Split mechanism</string>
+    <string name="settings_split_mechanism_freeform">BYDMate windows</string>
+    <string name="settings_split_mechanism_native">Native split</string>
+    <string name="settings_split_mechanism_native_hint">The split is done by the car\'s firmware. The look depends on the firmware: either two panes at one-third and two-thirds, or half and half with the second app picked on screen.</string>
+    <string name="settings_split_mechanism_platformized_hint">On this firmware the car itself splits the screen: the 1/3 and 2/3 panes, the divider and the swap gesture are native. BYDMate only starts the chosen pair and returns an app to its pane.</string>
+    <string name="settings_split_try_native_hint">Try the Native split mode.</string>
+    <string name="split_feature_disabled">Split screen is disabled in settings</string>
+    <!-- Tech panel: compact card cell + full screen -->
+    <string name="dashboard_battery_insulation_label">insulation</string>
+    <string name="tech_title">Tech</string>
+    <string name="tech_status_online">autoservice online</string>
+    <string name="tech_status_offline">autoservice offline</string>
+    <string name="tech_no_data">The car does not report this data</string>
+    <string name="tech_card_battery_now">Battery · now</string>
+    <string name="tech_card_limits">BMS limits</string>
+    <string name="tech_card_cells">Cells</string>
+    <string name="tech_card_motors">Motors and inverters</string>
+    <string name="tech_card_climate">Climate</string>
+    <string name="tech_card_tyres">Tyres · pressure / temperature</string>
+    <string name="tech_card_history">Battery · history</string>
+    <string name="tech_label_hv_voltage">HV voltage</string>
+    <string name="tech_label_power">power</string>
+    <string name="tech_label_battery_power">battery power</string>
+    <string name="tech_label_max_charge">max charge power</string>
+    <string name="tech_label_max_discharge">available battery power</string>
+    <string name="tech_label_motor_temp">motor temperature</string>
+    <string name="tech_label_inverter_temp">inverter temperature</string>
+    <string name="tech_label_rpm">rpm</string>
+    <string name="tech_label_pedals">accelerator / brake pedal</string>
+    <string name="tech_label_front">front</string>
+    <string name="tech_label_rear">rear</string>
+    <string name="tech_label_compressor">compressor</string>
+    <string name="tech_label_climate">climate</string>
+    <string name="tech_label_inside_outside">cabin / outside</string>
+    <string name="tech_on">on</string>
+    <string name="tech_off">off</string>
+    <string name="tech_tyre_fl">FL</string>
+    <string name="tech_tyre_fr">FR</string>
+    <string name="tech_tyre_rl">RL</string>
+    <string name="tech_tyre_rr">RR</string>
+    <string name="tech_value_mohm">%1$.1f MΩ</string>
+    <string name="tech_value_mv">%1$d mV</string>
+    <string name="tech_value_volt">%1$d V</string>
+    <string name="tech_value_kw">%1$d kW</string>
+    <string name="tech_value_watt">%1$d W</string>
+    <string name="tech_value_percent_per_hour">%1$.2f %%/h</string>
+    <string name="tech_value_deg">%1$d°</string>
+    <string name="tech_value_temp">%1$d°C</string>
+    <string name="tech_value_percent">%1$d%%</string>
+    <string name="tech_value_tyre">%1$.2f bar · %2$d°</string>
+    <string name="tech_value_tyre_pressure">%1$.2f bar</string>
+    <string name="tech_value_cell_scale">%1$.2f V</string>
+    <string name="tech_hint_soh" formatted="false">Battery health: how much of the original capacity is left. 100% on a new car, slowly decreasing over the years. The car itself calculates this value.</string>
+    <string name="tech_hint_hv_voltage">Voltage of the traction battery. It rises while charging and falls as the pack discharges, roughly 450…560 V on this car. On its own it says little, it is useful together with power.</string>
+    <string name="tech_hint_motor_power">Power at the electric motors right now: how much the car sends to the wheels or takes back from them while regenerating. Zero when parked. The car itself calculates this value.</string>
+    <string name="tech_hint_power">How much energy the battery is giving out right now. Plus: the car is spending it (acceleration, climate). Minus: the battery is taking energy in, either regeneration while braking or charging from a charger. Second number: how fast the charge is draining, percent per hour. When parked this is the onboard electronics draw.</string>
+    <string name="tech_hint_12v">Voltage of the ordinary 12-volt battery that powers the electronics. With the car running it is 13…14.5 V. If it is below 12 V while parked, the battery is getting weak.</string>
+    <string name="tech_hint_insulation">Resistance between the high-voltage battery and the body. The higher the better: a few megaohms is normal. Falling towards 0.5 MΩ and below means insulation is damaged somewhere, time for a service.</string>
+    <string name="tech_hint_bms_limits">The ceiling the battery controller allows right now: how much to take in while charging (a charger may give less) and how much to give out for acceleration. On a cold or nearly full battery both values are lower: that is why charging is slower and regeneration weaker in winter.</string>
+    <string name="tech_hint_cells">The battery is made of hundreds of cells. Shown are the weakest one, the strongest one and the difference between them. A difference up to 20…30 mV is normal. A permanently large difference means one cell is ageing faster than the others.</string>
+    <string name="tech_hint_motors">Temperature of the electric motors and of the inverters that drive them. In ordinary driving up to 60…80°. During long acceleration or towing they get hotter and the car reduces power itself until they cool down.</string>
+    <string name="tech_hint_compressor">How many watts the air conditioning and heat pump compressor draws. It is the main consumer besides the motors: in summer heat and in winter frost it noticeably eats into the range.</string>
+    <string name="tech_hint_tyres">Pressure and temperature of each wheel from the sensors in the tyres. Pressure rises by 0.2…0.3 bar as the tyres warm up on a trip, that is normal. If one wheel is noticeably lower than the others, check whether it is losing air.</string>
 </resources>

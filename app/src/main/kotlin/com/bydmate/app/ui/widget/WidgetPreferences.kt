@@ -8,6 +8,9 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
+/** What the left-third tap should do when zoning is enabled. */
+enum class LeftTapMode { APP, SPLIT }
+
 /**
  * Thin wrapper around the "bydmate_widget" SharedPreferences file.
  * Keeps the keys in one place and exposes a Flow so Settings UI can react
@@ -145,11 +148,21 @@ class WidgetPreferences(private val prefs: SharedPreferences) {
         prefs.edit().putString(KEY_LEFT_TAP_ACTION, normalized).apply()
     }
 
+    fun getLeftTapMode(): LeftTapMode =
+        prefs.getString(KEY_LEFT_TAP_MODE, null)
+            ?.let { runCatching { LeftTapMode.valueOf(it) }.getOrNull() }
+            ?: LeftTapMode.APP
+
+    fun setLeftTapMode(mode: LeftTapMode) {
+        prefs.edit().putString(KEY_LEFT_TAP_MODE, mode.name).apply()
+    }
+
     data class LeftTapAppState(
         val enabled: Boolean,
         val action: String,
         val packageName: String,
         val label: String,
+        val mode: LeftTapMode = LeftTapMode.APP,
     )
 
     fun leftTapAppFlow(): Flow<LeftTapAppState> = callbackFlow {
@@ -158,12 +171,14 @@ class WidgetPreferences(private val prefs: SharedPreferences) {
             action = getLeftTapAction(),
             packageName = getLeftTapAppPackage(),
             label = getLeftTapAppLabel(),
+            mode = getLeftTapMode(),
         )
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
             if (changedKey == KEY_LEFT_TAP_ZONING ||
                 changedKey == KEY_LEFT_TAP_ACTION ||
                 changedKey == KEY_LEFT_TAP_APP_PKG ||
-                changedKey == KEY_LEFT_TAP_APP_LABEL
+                changedKey == KEY_LEFT_TAP_APP_LABEL ||
+                changedKey == KEY_LEFT_TAP_MODE
             ) {
                 trySend(snapshot())
             }
@@ -209,6 +224,27 @@ class WidgetPreferences(private val prefs: SharedPreferences) {
         awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
+    /**
+     * Packages the widget hides itself over, chosen by the user in Settings.
+     * SharedPreferences hands out its own live Set instance — copy on read and
+     * on write so callers can never mutate the stored value.
+     */
+    fun getHideInApps(): Set<String> =
+        prefs.getStringSet(KEY_HIDE_IN_APPS, null)?.toSet() ?: emptySet()
+
+    fun setHideInApps(packages: Set<String>) {
+        prefs.edit().putStringSet(KEY_HIDE_IN_APPS, packages.toSet()).apply()
+    }
+
+    fun hideInAppsFlow(): Flow<Set<String>> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
+            if (changedKey == KEY_HIDE_IN_APPS) trySend(getHideInApps())
+        }
+        trySend(getHideInApps())
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     private fun migrateLegacyLeftTapKey() {
         if (!prefs.contains(LEGACY_KEY_LEFT_TAP_NAVIGATOR)) return
         val editor = prefs.edit().remove(LEGACY_KEY_LEFT_TAP_NAVIGATOR)
@@ -237,8 +273,10 @@ class WidgetPreferences(private val prefs: SharedPreferences) {
         const val KEY_LEFT_TAP_APP_LABEL = "widget_left_tap_app_label"
         const val KEY_PARKING_CAMERA_URL = "widget_parking_camera_url"
         const val KEY_PARKING_CAMERAS = "widget_parking_cameras"
+        const val KEY_LEFT_TAP_MODE = "widget_left_tap_mode"
         const val KEY_BUTTONS_ENABLED = "widget_buttons_enabled"
         const val KEY_HIDE_ON_YOUTUBE = "widget_hide_on_youtube"
+        const val KEY_HIDE_IN_APPS = "widget_hide_in_apps"
         const val DEFAULT_LEFT_TAP_APP_PKG = "ru.yandex.yandexnavi"
         const val DEFAULT_LEFT_TAP_APP_LABEL = "Яндекс.Навигатор"
         const val DEFAULT_PARKING_CAMERA_URL = "https://parking.napaster.ru"

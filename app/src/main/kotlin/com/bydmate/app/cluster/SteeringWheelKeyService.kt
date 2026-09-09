@@ -8,7 +8,9 @@ import android.content.SharedPreferences
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
+import com.bydmate.app.media.KnobPlayPause
 import com.bydmate.app.navdata.NavA11yFeed
+import com.bydmate.app.service.TrackingService
 import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -18,7 +20,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * button (keycode in [ClusterProjectionManager.KEY_TRIGGER_KEYCODE], default
  * [DEFAULT_TRIGGER_KEYCODE] = the right star) toggles Yandex Navi between the cluster and the centre
  * screen and is consumed; every other key (switch OFF, a non-trigger button, the right-star
- * long-press that opens the native action menu) passes through untouched.
+ * long-press that opens the native action menu) passes through untouched. A separate switch
+ * ([ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE]) makes a volume-knob press play/pause the active
+ * MediaSession instead of letting the firmware switch the audio source.
  *
  * Inert unless enabled in secure settings (self-enabled via the daemon when the switch turns on —
  * no Accessibility UI on DiLink) AND the settings switch is on, so it does nothing for users who
@@ -46,6 +50,19 @@ class SteeringWheelKeyService : AccessibilityService() {
         instance = this
         isConnected = true
         Log.d(TAG, "connected; filtering steering-wheel keys")
+        com.bydmate.app.service.A11yRecoveryGate.markBound(prefs)  // ends the Android 10 recovery streak
+        // Android 10 (DiLink 3.0/4.0) a11y recovery: the daemon force-stops our package and the
+        // framework re-binds this service, which brings the process back without TrackingService.
+        // The daemon also broadcasts RECOVER_START, but this path does not depend on it. Idempotent
+        // (startForegroundService on a running service is a no-op); gated so DiLink 5.x is untouched.
+        if (android.os.Build.VERSION.SDK_INT <= 29 && !TrackingService.isRunning.value) {
+            try {
+                TrackingService.start(this)
+                Log.i(TAG, "a11y connected with TrackingService stopped: started it")
+            } catch (e: Exception) {
+                Log.w(TAG, "a11y connected: TrackingService start failed: ${e.message}")
+            }
+        }
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
@@ -79,6 +96,19 @@ class SteeringWheelKeyService : AccessibilityService() {
             VoiceKeyDecision.CONSUME -> return true
             VoiceKeyDecision.IGNORE -> {}
         }
+        // Volume-knob press: runs before the star decision, own switch, default off. The key is
+        // consumed whenever the feature is on — even when no MediaSession answers — because the
+        // alternative is the firmware's source switch, which is exactly what the user turned this
+        // on to avoid (pre-V1.6 firmware behaved the same: first controller or nothing).
+        val knobEnabled = prefs.getBoolean(ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE, false)
+        when (knobDecision(event.keyCode, isDown, knobEnabled)) {
+            KnobDecision.CONSUME_AND_PLAY_PAUSE -> {
+                KnobPlayPause.dispatch(applicationContext)
+                return true
+            }
+            KnobDecision.CONSUME -> return true
+            KnobDecision.PASS_THROUGH -> {}
+        }
         val enabled = prefs.getBoolean(ClusterProjectionManager.KEY_MIRROR_ENABLED, false)
         val trigger = prefs.getInt(ClusterProjectionManager.KEY_TRIGGER_KEYCODE, DEFAULT_TRIGGER_KEYCODE)
         return when (starDecision(event.keyCode, isDown, enabled, trigger)) {
@@ -88,7 +118,20 @@ class SteeringWheelKeyService : AccessibilityService() {
                 true
             }
             StarDecision.CONSUME -> true
-            StarDecision.PASS_THROUGH -> false
+            // Automation rules bound to a key run LAST: projection, voice and the knob keep
+            // priority over a user assignment, and the settings UI warns about occupied keys.
+            StarDecision.PASS_THROUGH -> when (
+                steeringKeyDecision(event.keyCode, isDown, TrackingService.steeringKeyAssigned(event.keyCode))
+            ) {
+                SteeringKeyDecision.FIRE -> {
+                    TrackingService.fireSteeringKey(event.keyCode) { matched ->
+                        Log.d(TAG, "steering key ${event.keyCode}: $matched rule(s)")
+                    }
+                    true
+                }
+                SteeringKeyDecision.CONSUME -> true
+                SteeringKeyDecision.PASS_THROUGH -> false
+            }
         }
     }
 

@@ -1,8 +1,11 @@
 @file:JvmName("HelperDaemon")
 package com.bydmate.app.helper
 
+import com.bydmate.app.BuildConfig
 import android.app.Presentation
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -19,7 +22,10 @@ import java.util.concurrent.TimeUnit
 import android.os.IBinder
 import android.os.Looper
 import android.os.Parcel
+import java.io.File
 import java.io.RandomAccessFile
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.UndeclaredThrowableException
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.channels.OverlappingFileLockException
@@ -27,6 +33,74 @@ import kotlin.system.exitProcess
 
 // Lock path on the device filesystem (writable by shell uid).
 private const val LOCK_PATH = "/data/local/tmp/bydmate_helper.lock"
+
+// SELinux domain of the running process; the daemon must land in the shell domain to be
+// allowed to addService. Unreadable on some firmwares — never fatal.
+private const val SELINUX_ATTR_PATH = "/proc/self/attr/current"
+
+// Stack frames printed alongside a bootstrap failure — enough to name the rejecting
+// framework call without burying the log.
+private const val FAILURE_STACK_FRAMES = 4
+
+// Guard against a pathological cause cycle while unwrapping reflection wrappers.
+private const val MAX_CAUSE_HOPS = 4
+
+// Budget for the placement part of a TX_LAUNCH_FREEFORM, measured from before the launch retry
+// loop. The client starts its FORCE_TIMEOUT_MS = 15s only once it holds the channel, so the whole
+// TX has 15s of daemon time. Worst case inside it: resolveOrLaunchTask ~9.5s on a cold start, the
+// pin loop, the grace poll (cut off here), and — only when placement fails — a fullscreen restore
+// that runs outside the deadline and costs ~2.5-3s on the shell compat path. 11.5s + 3s = ~14.5s
+// leaves ~0.5s for the binder return and for the unbudgeted tail of the last grace poll.
+private const val GRACE_DEADLINE_MS = 11_500L
+
+// One mid-relaunch grace poll: sleep, re-resolve, re-read. The deadline check reserves the sleep,
+// so a sleep never straddles GRACE_DEADLINE_MS; the tail after it (re-resolve, at most one re-pin,
+// re-read) is bounded but not budgeted — see GRACE_DEADLINE_MS for the slack it comes out of.
+private const val GRACE_POLL_MS = 500L
+
+/** Monotonic milliseconds: currentTimeMillis jumps when the head unit syncs its clock mid-launch. */
+private fun monotonicMs(): Long = System.nanoTime() / 1_000_000
+
+/**
+ * SELinux context of this process, or a marker when the attr file cannot be read.
+ * [path] is a parameter so the JVM unit test can point it at a temp file.
+ */
+internal fun readSelinuxContext(path: String = SELINUX_ATTR_PATH): String =
+    // The kernel NUL-terminates the attr value; drop it or the log line carries a stray byte.
+    runCatching { File(path).readText().filter { it.code != 0 }.trim() }
+        .getOrNull()?.takeIf { it.isNotEmpty() } ?: "(unavailable)"
+
+/**
+ * Renders a bootstrap failure together with its REAL cause.
+ *
+ * ServiceManager.addService is invoked reflectively, so the caught exception is an
+ * InvocationTargetException whose own message is always null — printing just that message
+ * is what left issue #64 ("ERR: addService null") undiagnosable. Unwraps the reflection
+ * wrappers, then prints the unwrapped class + message plus the top stack frames.
+ */
+internal fun describeBootstrapFailure(t: Throwable, frames: Int = FAILURE_STACK_FRAMES): String {
+    val root = unwrapReflectionCause(t)
+    return buildString {
+        append(root.javaClass.name)
+        append(": ")
+        append(root.message ?: "(no message)")
+        if (root !== t) append(" [wrapped in ${t.javaClass.simpleName}]")
+        root.stackTrace.take(frames).forEach { append("\n  at $it") }
+    }
+}
+
+/** Peels InvocationTargetException / UndeclaredThrowableException down to the real throwable. */
+private fun unwrapReflectionCause(t: Throwable): Throwable {
+    var current = t
+    var hops = 0
+    while (hops < MAX_CAUSE_HOPS &&
+        (current is InvocationTargetException || current is UndeclaredThrowableException)
+    ) {
+        current = current.cause ?: break
+        hops++
+    }
+    return current
+}
 
 /**
  * Acquires an exclusive file lock on [path]. Returns a (FileChannel, FileLock) pair on
@@ -58,14 +132,16 @@ internal fun acquireSingleOwnerLock(path: String): Pair<FileChannel, FileLock>? 
 /**
  * Shell-uid binder daemon entry point. Spawned by the app via:
  *   CLASSPATH=<apk> app_process /system/bin \
- *     --nice-name=bydmate_helper com.bydmate.app.helper.HelperDaemon <appUid>
+ *     --nice-name=bydmate_helper com.bydmate.app.helper.HelperDaemon <appUid> [<spawnToken>]
  *
  * Lifecycle:
- *   1. Parse expectedUid from args[0].
+ *   1. Parse expectedUid from args[0] and the optional spawn token from args[1].
  *   2. Acquire single-owner file lock — exits with ALREADY_RUNNING if held.
  *   3. Resolve autoservice IBinder reflectively.
- *   4. Register a Binder stub under SERVICE_NAME via ServiceManager.addService.
- *   5. Print READY and keepalive with Looper.loop().
+ *   4. Register a Binder stub under SERVICE_NAME via ServiceManager.addService; on firmwares
+ *      that refuse the registration to the shell domain (#64), fall back to handing the same
+ *      Binder to the app in a broadcast (see [publishBinderByBroadcast]).
+ *   5. Print READY via=<transport> and keepalive with Looper.loop().
  *
  * Hidden-API note: this daemon runs under app_process (tool context), NOT a normal
  * app process. The hidden-API enforcement layer is only active for app processes, so
@@ -78,6 +154,10 @@ fun main(args: Array<String>) {
         // non-daemon threads alive, so a bare `return` from main() would hang the JVM.
         exitProcess(2)
     }
+    // Spawn token of THIS spawn — echoed back to the app in the broadcast fallback so it can
+    // tell our Binder from anything else that reaches the exported receiver. Absent when an
+    // older app version did the spawn (then only the addService path is available).
+    val spawnToken = spawnTokenFrom(args)
 
     // Step 1: single-owner lock — prevents duplicate daemons.
     val lockPair = acquireSingleOwnerLock(LOCK_PATH)
@@ -91,6 +171,16 @@ fun main(args: Array<String>) {
     // stack frame is never unwound (loop() blocks forever). The lock stays live.
     @Suppress("UNUSED_VARIABLE") val lockChannel = lockPair.first
     @Suppress("UNUSED_VARIABLE") val lockHandle = lockPair.second
+
+    // Identity of the spawned process. addService is only permitted from the shell domain,
+    // so a wrong uid or SELinux context explains a registration refusal on its own (#64).
+    // The token itself never reaches the log — it authenticates the broadcast fallback, and the
+    // daemon log is world-readable on the device. Only its presence is diagnostic.
+    println(
+        "BOOT uid=${android.os.Process.myUid()} pid=${android.os.Process.myPid()} " +
+            "selinux=${readSelinuxContext()} token=${if (spawnToken != null) "set" else "absent"}"
+    )
+    System.out.flush()
 
     // Prepare the main looper BEFORE ActivityThread.systemMain (OpenBYD EntryPoint order),
     // then acquire a system Context for the projection DisplayManager calls.
@@ -113,8 +203,6 @@ fun main(args: Array<String>) {
     // Keeps created VirtualDisplays alive (their backing Surface comes from the app overlay).
     // Keyed by displayId so TX_RELEASE_VIRTUAL_DISPLAY can release the right one.
     val virtualDisplays = ConcurrentHashMap<Int, VirtualDisplay>()
-    // Presentation hosts are needed on DiLink builds where the IPC display is private to system
-    // processes. Keyed by nested VirtualDisplay id so release owns the complete lifecycle.
     val presentationHosts = ConcurrentHashMap<Int, Presentation>()
 
     // Step 3: build our stub Binder.
@@ -122,6 +210,13 @@ fun main(args: Array<String>) {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
             // Uid gate first — only our app may call.
             if (Binder.getCallingUid() != expectedUid) return false
+
+            // IBinder.getInterfaceDescriptor() on the app side is a plain INTERFACE_TRANSACTION
+            // with NO interface token in the parcel, so it must be answered by the base class
+            // BEFORE enforceInterface — otherwise the broadcast-delivered binder (#64/#148) is
+            // rejected as descriptor_mismatch (field log 2026-08-25, storm-1986). Name lookups via
+            // ServiceManager never asked for the descriptor, which is why DiLink 5 never noticed.
+            if (code == IBinder.INTERFACE_TRANSACTION) return super.onTransact(code, data, reply, flags)
 
             data.enforceInterface(HelperBinderProtocol.DESCRIPTOR)
 
@@ -196,15 +291,16 @@ fun main(args: Array<String>) {
 
                 HelperBinderProtocol.TX_SET_TASK_WINDOWING_MODE -> runCatching {
                     val taskId = data.readInt(); val mode = data.readInt()
-                    // The compat shell path relaunches by component, so the package is resolved
-                    // from the task id. Clients only send FULLSCREEN through this TX (pull-back);
-                    // the freeform display id is irrelevant here, hence 0.
-                    setWindowingModeCompat(
-                        taskId, mode, 0,
-                        ::setTaskWindowingModeReflect,
-                        { packageForTask(taskId)?.let { resolveLaunchComponent(it) } },
-                        ::execShell,
-                    ) { Thread.sleep(it) }
+                    handleSetWindowingModeTx(
+                        taskId, mode, readTrailingPaneType(data),
+                        reflectSet = ::setTaskWindowingModeReflect,
+                        resolveComponent = { packageForTask(taskId)?.let { resolveLaunchComponent(it) } },
+                        shell = amShell,
+                        getActivityType = { ti -> taskActivityType(ti) },
+                        sleep = { Thread.sleep(it) },
+                        // Enables the non-destructive freeform probe before a retype remove.
+                        stateOf = { ti -> taskModeState(ti) },
+                    )
                     reply?.writeInt(0); reply?.writeInt(0)
                     true
                 }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
@@ -228,21 +324,10 @@ fun main(args: Array<String>) {
                     val density = data.readInt(); val vdFlags = data.readInt()
                     val clusterDisplayId = data.readInt()
                     val ctx = systemContext
-                    val id = if (ctx == null) {
-                        -1
-                    } else {
-                        createPresentationVirtualDisplay(
-                            ctx,
-                            virtualDisplays,
-                            presentationHosts,
-                            name,
-                            width,
-                            height,
-                            density,
-                            vdFlags,
-                            clusterDisplayId,
-                        )
-                    }
+                    val id = if (ctx == null) -1 else createPresentationVirtualDisplay(
+                        ctx, virtualDisplays, presentationHosts, name, width, height,
+                        density, vdFlags, clusterDisplayId,
+                    )
                     if (id > 0) { reply?.writeInt(0); reply?.writeInt(id) }
                     else { reply?.writeInt(-1); reply?.writeInt(0) }
                     true
@@ -339,7 +424,59 @@ fun main(args: Array<String>) {
 
                 HelperBinderProtocol.TX_ENABLE_ACCESSIBILITY -> runCatching {
                     val ok = enableAccessibilityService()
+                    // Only reached when the app found the service NOT running: snapshot the
+                    // framework's own view so a field log names the exact state (#a11y DiLink 4).
+                    // Off the binder thread: a slow dumpsys must not delay the reply (the client
+                    // holds its mutex and a 15 s budget; a late reply would read as reassert=false).
+                    logA11yFrameworkStateAsync(ok)
                     reply?.writeInt(if (ok) 0 else -1); reply?.writeInt(0)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_RECOVER_ACCESSIBILITY -> runCatching {
+                    val ok = recoverAccessibilityService()
+                    reply?.writeInt(if (ok) 0 else -1); reply?.writeInt(0)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_CLUSTER_DISPLAY_DIAG -> runCatching {
+                    // Reply immediately: the snapshot runs 8-9 shell commands (up to 4 s each) on
+                    // its own thread, so the binder thread and the app's HelperClient mutex are
+                    // never held behind a slow dumpsys. Rate-limited, not once-only: the user
+                    // usually retries after turning log recording on, and `logcat -c` at recording
+                    // start wipes an earlier snapshot.
+                    // Inside the rate window the cached snapshot is re-emitted instead, so a
+                    // fresh recording session still gets the full cdiag block.
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val started = synchronized(clusterDiagLock) {
+                        val running = clusterDiagThread?.isAlive == true
+                        if (running) { clusterDiagReplayWhenDone = true; true }
+                        else if (now - clusterDiagLastMs < CLUSTER_DIAG_MIN_INTERVAL_MS) {
+                            val cached = clusterDiagCache
+                            if (cached != null) {
+                                android.util.Log.i("bydmate_helper", "cdiag: replaying cached snapshot (${cached.size} lines)")
+                                cached.forEach { android.util.Log.i("bydmate_helper", it) }
+                            }
+                            cached != null
+                        } else {
+                            clusterDiagLastMs = now
+                            clusterDiagThread = Thread({
+                                val lines = runCatching { logClusterDisplayDiag() }.getOrNull()
+                                val replay = synchronized(clusterDiagLock) {
+                                    if (lines != null) clusterDiagCache = lines
+                                    clusterDiagReplayWhenDone.also { clusterDiagReplayWhenDone = false }
+                                }
+                                // A request arrived mid-collection (typically: recording just
+                                // started and wiped logcat) - emit the whole block once more.
+                                if (replay && lines != null) {
+                                    android.util.Log.i("bydmate_helper", "cdiag: replaying snapshot after collection (${lines.size} lines)")
+                                    lines.forEach { android.util.Log.i("bydmate_helper", it) }
+                                }
+                            }, "bydmate-cdiag").apply { isDaemon = true; start() }
+                            true
+                        }
+                    }
+                    reply?.writeInt(if (started) 0 else 1); reply?.writeInt(0)
                     true
                 }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
 
@@ -419,15 +556,243 @@ fun main(args: Array<String>) {
                     true
                 }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
 
+                HelperBinderProtocol.TX_GET_TASK_STATE -> runCatching {
+                    val pkg = data.readString() ?: ""
+                    val state = findTaskState(pkg)
+                    reply?.writeInt(0)                           // status = ok
+                    reply?.writeInt(state?.taskId ?: -1)         // -1 = no running task
+                    reply?.writeInt(state?.windowingMode ?: 0)
+                    reply?.writeInt(state?.left ?: 0)
+                    reply?.writeInt(state?.top ?: 0)
+                    reply?.writeInt(state?.right ?: 0)
+                    reply?.writeInt(state?.bottom ?: 0)
+                    // 7th int (additive): displayId. Old clients read only 6 ints and ignore the
+                    // trailing value (parcel reads are sequential). New client against an old daemon
+                    // sees no 7th int and defaults to 0 (main display; feature auto-disarms).
+                    reply?.writeInt(state?.displayId ?: 0)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_APP_SPLIT_SUPPORTED -> runCatching {
+                    val pkg = data.readString() ?: ""
+                    val result = queryStatusBarSplitSupport(pkg)
+                    if (result < 0) {
+                        reply?.writeInt(-1); reply?.writeInt(0)
+                    } else {
+                        reply?.writeInt(0); reply?.writeInt(result)
+                    }
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
                 HelperBinderProtocol.TX_LAUNCH_FREEFORM -> runCatching {
                     val pkg = data.readString() ?: ""
                     val displayId = data.readInt()
                     val l = data.readInt(); val t = data.readInt()
                     val r = data.readInt(); val b = data.readInt()
-                    val status = launchFreeform(pkg, displayId, l, t, r, b)
+                    val status = launchFreeform(pkg, displayId, l, t, r, b, readTrailingPaneType(data))
                     reply?.writeInt(status); reply?.writeInt(0)
                     true
                 }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_FORCE_STOP -> runCatching {
+                    val pkg = data.readString() ?: ""
+                    forceStopPackage(pkg)
+                    reply?.writeInt(0); reply?.writeInt(0)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_GET_VERSION -> runCatching {
+                    // VERSION_CODE is frozen at spawn time: the daemon's CLASSPATH is fixed to the
+                    // APK that spawned it, so this reflects the exact app version the daemon carries.
+                    reply?.writeInt(0); reply?.writeInt(BuildConfig.VERSION_CODE)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_GET_TOP_PACKAGE -> runCatching {
+                    val pkg = topTaskPackage() ?: ""
+                    reply?.writeInt(0); reply?.writeString(pkg)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeString(""); true }
+
+                HelperBinderProtocol.TX_RAISE_FREEFORM_TASK -> runCatching {
+                    val pkg = data.readString() ?: ""
+                    val displayId = data.readInt()
+                    val ok = raiseFreeformTaskCore(
+                        pkg, displayId, readTrailingPaneType(data), ::resolveLaunchComponent, amShell,
+                        taskIdForPackage = { p -> findTaskState(p)?.taskId ?: -1 },
+                        getActivityType = ::taskActivityType,
+                        sleep = { ms -> Thread.sleep(ms) },
+                        // Enables the non-destructive freeform probe before a retype remove.
+                        stateOf = { ti -> taskModeState(ti) },
+                    )
+                    reply?.writeInt(if (ok) 0 else -1); reply?.writeInt(0)
+                    true
+                }.getOrElse { reply?.writeInt(-1); reply?.writeInt(0); true }
+
+                HelperBinderProtocol.TX_DUMP_FIDS -> runCatching {
+                    val offset = data.readInt()
+                    val dump: String = if (offset == 0) {
+                        dumpFidsCore(classResolver = { runCatching { Class.forName(it) }.getOrNull() })
+                            .also { dumpFidsCache = it }
+                    } else {
+                        dumpFidsCache
+                            ?: dumpFidsCore(classResolver = { runCatching { Class.forName(it) }.getOrNull() })
+                                .also { dumpFidsCache = it }
+                    }
+                    val dumpBytes = dump.toByteArray(Charsets.UTF_8)
+                    val chunk = dumpFidsChunkBytes(dumpBytes, offset)
+                    reply?.writeInt(0)
+                    reply?.writeInt(dumpBytes.size)
+                    reply?.writeByteArray(chunk)
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.e("bydmate_helper", "TX_DUMP_FIDS chunked: error", e)
+                    // Write full protocol reply so the client reads status=-1 and returns ReadError,
+                    // not BinderAbsent. Without totalLength+byteArray the client sees dataAvail()<8
+                    // and maps the call to BinderAbsent ("демон недоступен"), which is a lie (Q4-1).
+                    reply?.writeInt(-1); reply?.writeInt(0); reply?.writeByteArray(ByteArray(0))
+                    true
+                }
+
+                HelperBinderProtocol.TX_GET_TOP_TASK -> runCatching {
+                    val info = topTaskInfo()
+                    if (info == null) {
+                        reply?.writeInt(-1)
+                    } else {
+                        reply?.writeInt(0)
+                        reply?.writeString(info.pkg)
+                        reply?.writeInt(info.taskId)
+                        reply?.writeInt(info.windowingMode)
+                        reply?.writeInt(info.activityType)
+                        reply?.writeInt(info.displayId)
+                        // Last: a client that predates the field stops reading before it.
+                        reply?.writeInt(info.visible)
+                    }
+                    true
+                }.getOrElse { reply?.writeInt(-1); true }
+
+                HelperBinderProtocol.TX_SPLIT37_ENTER -> runCatching {
+                    val iAtm = activityTaskManager()
+                    val enter = splitMethod(iAtm, "enterSplitMode", 0)
+                    if (enter == null) {
+                        android.util.Log.w("bydmate_helper", "TX_SPLIT37_ENTER: enterSplitMode absent")
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_UNSUPPORTED); reply?.writeInt(-1)
+                    } else {
+                        enter.invoke(iAtm)
+                        // Read the area mode BEFORE the first write: a throw here must land in
+                        // getOrElse with an untouched reply, not append a second status to it.
+                        val areaMode = screenAreaMode(iAtm)
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_OK)
+                        reply?.writeInt(areaMode)
+                    }
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_ENTER failed", e)
+                    reply?.writeInt(HelperBinderProtocol.SPLIT37_FAILED); reply?.writeInt(-1); true
+                }
+
+                HelperBinderProtocol.TX_SPLIT37_AREA_INFO -> runCatching {
+                    val iAtm = activityTaskManager()
+                    val byAreaId = splitMethod(iAtm, "getRootTaskIdByAreaId", 1)
+                    if (byAreaId == null) {
+                        android.util.Log.w("bydmate_helper", "TX_SPLIT37_AREA_INFO: getRootTaskIdByAreaId absent")
+                        writeAreaInfoFailure(reply, HelperBinderProtocol.SPLIT37_UNSUPPORTED)
+                    } else {
+                        val areaMode = screenAreaMode(iAtm)
+                        // One getAllRootTaskInfos() call per request: the watchdog polls this verb
+                        // once a second, and all three areas are matched against the same snapshot.
+                        val infos = rootTaskInfosSnapshot(iAtm)
+                        val areas = SPLIT37_AREA_IDS.map { areaId ->
+                            val rootTaskId = byAreaId.invoke(iAtm, areaId) as? Int ?: -1
+                            // A root without readable bounds is reported as absent (id -1): the engine
+                            // must not resize a pane to a rect it never read.
+                            val bounds = if (rootTaskId > 0 && infos != null) rootTaskBounds(infos, rootTaskId) else null
+                            if (bounds == null) intArrayOf(-1, 0, 0, 0, 0)
+                            else intArrayOf(rootTaskId, bounds.left, bounds.top, bounds.right, bounds.bottom)
+                        }
+                        // Everything is read BEFORE the first write: a throw mid-reflection must land
+                        // in getOrElse with an untouched reply, not leave a half-written one that the
+                        // client would parse as real geometry.
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_OK)
+                        reply?.writeInt(areaMode)
+                        areas.forEach { area -> area.forEach { reply?.writeInt(it) } }
+                    }
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_AREA_INFO failed", e)
+                    writeAreaInfoFailure(reply, HelperBinderProtocol.SPLIT37_FAILED); true
+                }
+
+                HelperBinderProtocol.TX_SPLIT37_MOVE_TASK -> runCatching {
+                    val taskId = data.readInt(); val rootTaskId = data.readInt()
+                    val l = data.readInt(); val t = data.readInt(); val r = data.readInt(); val b = data.readInt()
+                    val toTop = readTrailingToTop(data)
+                    val status = split37MoveTaskCore(
+                        taskId, rootTaskId, l, t, r, b, toTop, amShell, ::setTaskBoundsReflect,
+                    )
+                    reply?.writeInt(status); reply?.writeInt(0)
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_MOVE_TASK failed", e)
+                    reply?.writeInt(HelperBinderProtocol.SPLIT37_FAILED); reply?.writeInt(0); true
+                }
+
+                HelperBinderProtocol.TX_SPLIT37_TASK_AREA -> runCatching {
+                    val taskId = data.readInt()
+                    val iAtm = activityTaskManager()
+                    val forTask = splitMethod(iAtm, "getTaskAreaIdForMulti", 1)
+                    if (forTask == null) {
+                        android.util.Log.w("bydmate_helper", "TX_SPLIT37_TASK_AREA: getTaskAreaIdForMulti absent")
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_UNSUPPORTED); reply?.writeInt(-1)
+                    } else {
+                        // Invoke before the first write — see TX_SPLIT37_ENTER.
+                        val areaId = forTask.invoke(iAtm, taskId) as? Int ?: -1
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_OK)
+                        reply?.writeInt(areaId)
+                    }
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_TASK_AREA failed", e)
+                    reply?.writeInt(HelperBinderProtocol.SPLIT37_FAILED); reply?.writeInt(-1); true
+                }
+
+                HelperBinderProtocol.TX_SPLIT37_SWAP -> runCatching {
+                    val iAtm = activityTaskManager()
+                    // Exact vendor spelling, capital S — not a typo.
+                    val swap = splitMethod(iAtm, "SwapSplitPosition", 0)
+                    if (swap == null) {
+                        android.util.Log.w("bydmate_helper", "TX_SPLIT37_SWAP: SwapSplitPosition absent")
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_UNSUPPORTED)
+                    } else {
+                        swap.invoke(iAtm)
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_OK)
+                    }
+                    reply?.writeInt(0)
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_SWAP failed", e)
+                    reply?.writeInt(HelperBinderProtocol.SPLIT37_FAILED); reply?.writeInt(0); true
+                }
+
+                HelperBinderProtocol.TX_SPLIT37_CHANGE_MODE -> runCatching {
+                    val mode = data.readInt()
+                    val iAtm = activityTaskManager()
+                    val change = splitMethod(iAtm, "changeSplitScreenMode", 1)
+                    if (change == null) {
+                        android.util.Log.w("bydmate_helper", "TX_SPLIT37_CHANGE_MODE: changeSplitScreenMode absent")
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_UNSUPPORTED); reply?.writeInt(-1)
+                    } else {
+                        change.invoke(iAtm, mode)
+                        // Read the area mode BEFORE the first write — see TX_SPLIT37_ENTER.
+                        val areaMode = screenAreaMode(iAtm)
+                        reply?.writeInt(HelperBinderProtocol.SPLIT37_OK)
+                        reply?.writeInt(areaMode)
+                    }
+                    true
+                }.getOrElse { e ->
+                    android.util.Log.w("bydmate_helper", "TX_SPLIT37_CHANGE_MODE failed", e)
+                    reply?.writeInt(HelperBinderProtocol.SPLIT37_FAILED); reply?.writeInt(-1); true
+                }
 
                 else -> super.onTransact(code, data, reply, flags)
             }
@@ -435,18 +800,36 @@ fun main(args: Array<String>) {
     }
     helperBinder.attachInterface(null, HelperBinderProtocol.DESCRIPTOR)
 
-    // Step 4: register the stub with ServiceManager.
+    // Step 4: register the stub with ServiceManager, or publish it by broadcast when the
+    // firmware refuses the registration to the shell domain (#64 / #148).
+    var transport = "servicemanager"
     try {
         smCls.getMethod("addService", String::class.java, IBinder::class.java)
             .invoke(null, HelperBinderProtocol.SERVICE_NAME, helperBinder)
     } catch (e: Exception) {
-        System.err.println("ERR: addService ${e.message}")
-        // exitProcess so the OS releases the file lock we hold; a bare return would
-        // leave a hung lock-holding daemon and block every future spawn.
-        exitProcess(4)
+        System.err.println("ERR: addService ${describeBootstrapFailure(e)}")
+        when (decideRegistrationFallback(systemContext != null, spawnToken != null)) {
+            RegistrationFallback.EXIT_NO_CONTEXT -> {
+                System.err.println("ERR: broadcast fallback unavailable: no system context")
+                // exitProcess so the OS releases the file lock we hold; a bare return would
+                // leave a hung lock-holding daemon and block every future spawn.
+                exitProcess(4)
+            }
+            RegistrationFallback.EXIT_NO_TOKEN -> {
+                System.err.println("ERR: broadcast fallback unavailable: no spawn token")
+                exitProcess(4)
+            }
+            RegistrationFallback.BROADCAST -> try {
+                publishBinderByBroadcast(systemContext!!, helperBinder, spawnToken!!)
+                transport = "broadcast"
+            } catch (be: Exception) {
+                System.err.println("ERR: broadcast ${describeBootstrapFailure(be)}")
+                exitProcess(5)
+            }
+        }
     }
 
-    System.out.println("READY pid=${android.os.Process.myPid()}")
+    System.out.println("READY via=$transport pid=${android.os.Process.myPid()}")
     System.out.flush()
 
     // Keepalive: Looper.loop() blocks this thread indefinitely so main() never returns
@@ -456,6 +839,73 @@ fun main(args: Array<String>) {
     // it is purely a blocking keepalive for the main thread.
     Looper.loop()
 }
+
+/**
+ * Spawn token passed as args[1]. Absent (or blank) when an app version older than the
+ * broadcast fallback did the spawn — then only the addService path can deliver the Binder.
+ */
+internal fun spawnTokenFrom(args: Array<String>): String? =
+    args.getOrNull(1)?.takeIf { it.isNotBlank() }
+
+/** What to do after ServiceManager.addService refused us — see [decideRegistrationFallback]. */
+internal enum class RegistrationFallback {
+    /** No system Context: nothing can send a broadcast from this process. */
+    EXIT_NO_CONTEXT,
+    /** No spawn token: the app could not authenticate the intent, so we must not send one. */
+    EXIT_NO_TOKEN,
+    /** Hand the Binder to the app in a broadcast. */
+    BROADCAST,
+}
+
+/**
+ * The whole decision after a refused addService, split out from the Android-dependent sender
+ * so it can be unit-tested. Both preconditions are hard: without a Context there is no
+ * sendBroadcast, and without a token the app has no way to tell our intent from a forged one
+ * (the receiver is exported — the sender is the shell uid, not our own process).
+ */
+internal fun decideRegistrationFallback(hasSystemContext: Boolean, hasToken: Boolean): RegistrationFallback =
+    when {
+        !hasSystemContext -> RegistrationFallback.EXIT_NO_CONTEXT
+        !hasToken -> RegistrationFallback.EXIT_NO_TOKEN
+        else -> RegistrationFallback.BROADCAST
+    }
+
+/**
+ * Hands [binder] to the app in an explicit broadcast — the D+ (aps_diplus) recipe for firmwares
+ * where the shell domain may transact with autoservice but may not register a service name.
+ *
+ * Explicit component + package so no other app can receive it, FLAG_INCLUDE_STOPPED_PACKAGES so
+ * a force-stopped app (the state right after an update) is still woken. The token lets the app
+ * authenticate the sender; version and pid are diagnostics for the dump.
+ */
+private fun publishBinderByBroadcast(ctx: Context, binder: IBinder, token: String) {
+    val extras = Bundle().apply {
+        putBinder(HelperBinderProtocol.KEY_BINDER, binder)
+        putString(HelperBinderProtocol.KEY_TOKEN, token)
+        putLong(HelperBinderProtocol.KEY_VERSION, BuildConfig.VERSION_CODE.toLong())
+        putInt(HelperBinderProtocol.KEY_PID, android.os.Process.myPid())
+    }
+    val intent = Intent(HelperBinderProtocol.ACTION_BINDER)
+        .setComponent(ComponentName(HelperBinderProtocol.APP_PACKAGE, HelperBinderProtocol.RECEIVER_CLASS))
+        .setPackage(HelperBinderProtocol.APP_PACKAGE)
+        .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+        .putExtra(HelperBinderProtocol.EXTRA_BUNDLE, extras)
+    ctx.sendBroadcast(intent)
+}
+
+// Trailing activityType int: absent when the caller predates the split touch fix →
+// legacy RECENTS. Values other than STANDARD are coerced to RECENTS (conservative).
+internal fun readTrailingPaneType(data: Parcel): Int {
+    val raw = if (data.dataAvail() > 0) data.readInt() else ACTIVITY_TYPE_RECENTS
+    return if (raw == ACTIVITY_TYPE_STANDARD) ACTIVITY_TYPE_STANDARD else ACTIVITY_TYPE_RECENTS
+}
+
+/**
+ * Trailing toTop int of TX_SPLIT37_MOVE_TASK: absent when the caller predates the bounce (A-2) →
+ * onTop, the behavior every move had before it.
+ */
+internal fun readTrailingToTop(data: Parcel): Boolean =
+    if (data.dataAvail() > 0) data.readInt() != 0 else true
 
 /**
  * Performs a single autoservice Binder transact and returns (status, retInt).
@@ -520,6 +970,23 @@ internal fun readBatchIntoReply(
         reply?.writeInt(status)
         reply?.writeInt(retInt)
     }
+}
+
+/**
+ * Force-stops [packageName] via IActivityManager.forceStopPackage(pkg, userId=0).
+ * Shell uid holds FORCE_STOP_PACKAGES. Fail-soft: any reflection failure throws (caller wraps
+ * in runCatching). Used before freeform re-launch to clear a stale fullscreen invisible task
+ * that resists windowing-mode changes (on-car: pressing Home leaves the app in fullscreen/invisible
+ * state; am start --windowingMode 5 cannot coerce it; only force-stop + fresh start succeeds).
+ *
+ * Hidden-API note: daemon runs under app_process — reflection without HiddenApiBypass is fine.
+ */
+private fun forceStopPackage(packageName: String) {
+    val amCls = Class.forName("android.app.ActivityManager")
+    val iAm = amCls.getMethod("getService").invoke(null)
+        ?: throw IllegalStateException("ActivityManager.getService() returned null")
+    iAm.javaClass.getMethod("forceStopPackage", String::class.java, Int::class.javaPrimitiveType)
+        .invoke(iAm, packageName, 0)
 }
 
 /** Resolves IActivityTaskManager via ActivityTaskManager.getService() (hidden API, ok under app_process). */
@@ -588,6 +1055,192 @@ private fun packageForTask(taskId: Int): String? = runCatching {
 }.getOrNull()
 
 /**
+ * Returns the package name of the foreground (first/top-of-stack) task, or null when no task
+ * exists or reflection fails. Uses the same getTasks reflection as [findTaskId] / [findTaskState];
+ * tasks[0] is the most-recently-used / currently focused task on Android recents ordering.
+ * Mirrors TX_GET_VERSION pattern: caller writes "" on null so the client reads a defined value.
+ */
+private fun topTaskPackage(): String? = runCatching {
+    val iAtm = activityTaskManager()
+    val getTasks = iAtm.javaClass.getMethod(
+        "getTasks", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+    )
+    val tasks = getTasks.invoke(iAtm, 1, false, false) as? List<*> ?: return@runCatching null
+    val task = tasks.firstOrNull() ?: return@runCatching null
+    listOf("topActivity", "baseActivity").firstNotNullOfOrNull { fieldName ->
+        fieldByName(task, fieldName)?.let { f ->
+            f.isAccessible = true
+            (f.get(task) as? android.content.ComponentName)?.packageName
+        }
+    }
+}.getOrNull()
+
+/**
+ * Snapshot of the top root task returned by TX_GET_TOP_TASK (Q3 / F-3 COVERED detection).
+ * [displayId] mirrors the TaskInfo.displayId convention: 0 = main display, 2 = cluster fission.
+ * [visible] is RunningTaskInfo.isVisible as 1/0, or -1 when the ROM has no such field: the MRU
+ * ordering of getTasks() lists tasks nobody can see, and the split adoption must tell them apart.
+ */
+private data class TopTaskInfo(
+    val pkg: String,
+    val taskId: Int,
+    val windowingMode: Int,
+    val activityType: Int,
+    val displayId: Int,
+    val visible: Int,
+)
+
+/**
+ * Returns the windowing state of the first root task on the main display (displayId==0) among
+ * the top-10 MRU tasks, or null when no matching task is found or any reflection step fails.
+ * Used by TX_GET_TOP_TASK.
+ *
+ * Uses getTasks(10) rather than getTasks(1): getTasks(1) returns only the single MRU task across
+ * ALL displays, so when the cluster projection app is at the foreground on display 2, a foreign
+ * fullscreen on display 0 would be invisible to COVERED detection.
+ *
+ * Returns null when windowConfiguration is unavailable. A partial reflection failure must NOT be
+ * converted to WINDOWING_FULLSCREEN+displayId=0, which would falsely satisfy foreignFullscreen
+ * and tear down the split session.
+ */
+private fun topTaskInfo(): TopTaskInfo? = runCatching {
+    val iAtm = activityTaskManager()
+    val getTasks = iAtm.javaClass.getMethod(
+        "getTasks", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+    )
+    val tasks = getTasks.invoke(iAtm, 10, false, false) as? List<*> ?: return@runCatching null
+    // Pick the first task on the main display (displayId == 0).
+    // C-4: if the displayId field is absent via reflection, skip the task rather than defaulting
+    // to 0 (which would synthesise main-display presence and falsely trigger COVERED teardown).
+    val task = tasks.firstOrNull { rawTask ->
+        rawTask != null &&
+        runCatching {
+            fieldByName(rawTask, "displayId")?.let { f -> f.isAccessible = true; f.getInt(rawTask) == 0 } ?: false
+        }.getOrDefault(false)
+    } ?: return@runCatching null
+    val pkg = listOf("topActivity", "baseActivity").firstNotNullOfOrNull { name ->
+        fieldByName(task, name)?.let { f -> f.isAccessible = true; (f.get(task) as? android.content.ComponentName)?.packageName }
+    } ?: return@runCatching null
+    val taskId = (fieldByName(task, "taskId") ?: fieldByName(task, "id"))
+        ?.let { f -> f.isAccessible = true; f.getInt(task) } ?: -1
+    // Require windowConfiguration: returning null on failure prevents synthesising FULLSCREEN@display0,
+    // which would look like a foreign fullscreen app and falsely trigger COVERED teardown (Q3-1).
+    val configField = fieldByName(task, "configuration") ?: return@runCatching null
+    configField.isAccessible = true
+    val cfg = configField.get(task) ?: return@runCatching null
+    val winConfigField = fieldByName(cfg, "windowConfiguration") ?: return@runCatching null
+    winConfigField.isAccessible = true
+    val winConfig = winConfigField.get(cfg) ?: return@runCatching null
+    // getWindowingMode throws → outer runCatching catches → getOrNull() returns null (safe).
+    val windowingMode = winConfig.javaClass.getMethod("getWindowingMode").invoke(winConfig) as Int
+    val activityType = runCatching {
+        winConfig.javaClass.getMethod("getActivityType").invoke(winConfig) as Int
+    }.getOrDefault(-1)
+    val displayId = runCatching {
+        fieldByName(task, "displayId")?.let { f -> f.isAccessible = true; f.getInt(task) } ?: 0
+    }.getOrDefault(0)
+    // -1 (unknown) rather than a guess: the client treats anything but 1 as "not visible".
+    val visible = runCatching {
+        fieldByName(task, "isVisible")?.let { f ->
+            f.isAccessible = true
+            if (f.getBoolean(task)) 1 else 0
+        } ?: -1
+    }.getOrDefault(-1)
+    TopTaskInfo(pkg, taskId, windowingMode, activityType, displayId, visible)
+}.getOrNull()
+
+/**
+ * Windowing state (taskId, mode, bounds, displayId) for a running task; null when not found
+ * or reflection fails. [displayId] is the Android display the task lives on: 0 = main screen,
+ * 2 = cluster fission display on Leopard 3. Falls back to 0 when the field is absent on the ROM,
+ * so an old app reading only the first 6 ints sees the same behavior as before this field was
+ * added (feature auto-disarms because displayId == 0 == main display).
+ */
+private data class TaskWindowState(
+    val taskId: Int, val windowingMode: Int,
+    val left: Int, val top: Int, val right: Int, val bottom: Int,
+    val displayId: Int,
+)
+
+/**
+ * Finds [packageName]'s running task and reads its windowing mode + bounds from
+ * task.configuration.windowConfiguration (hidden API, same access pattern as taskModeState).
+ * Returns null when no matching task is running or reflection fails.
+ * The caller interprets null as "no running task" (status 0, taskId -1).
+ */
+private fun findTaskState(packageName: String): TaskWindowState? = runCatching {
+    val iAtm = activityTaskManager()
+    val getTasks = iAtm.javaClass.getMethod(
+        "getTasks", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+    )
+    val tasks = getTasks.invoke(iAtm, 100, false, false) as? List<*> ?: return@runCatching null
+    for (task in tasks) {
+        if (task == null) continue
+        val pkg = listOf("topActivity", "baseActivity").firstNotNullOfOrNull { fieldName ->
+            fieldByName(task, fieldName)?.let { f ->
+                f.isAccessible = true
+                (f.get(task) as? android.content.ComponentName)?.packageName
+            }
+        }
+        if (pkg != packageName) continue
+        val idField = fieldByName(task, "taskId") ?: fieldByName(task, "id") ?: continue
+        idField.isAccessible = true
+        val taskId = idField.getInt(task)
+        val configField = fieldByName(task, "configuration") ?: return@runCatching null
+        configField.isAccessible = true
+        val config = configField.get(task) ?: return@runCatching null
+        val winConfigField = fieldByName(config, "windowConfiguration") ?: return@runCatching null
+        winConfigField.isAccessible = true
+        val winConfig = winConfigField.get(config) ?: return@runCatching null
+        val mode = winConfig.javaClass.getMethod("getWindowingMode").invoke(winConfig) as Int
+        // getBounds() returns a live Rect; fall back to the backing field on ROMs that hide the getter.
+        val bounds: android.graphics.Rect = runCatching {
+            winConfig.javaClass.getMethod("getBounds").invoke(winConfig) as android.graphics.Rect
+        }.getOrElse {
+            fieldByName(winConfig, "mBounds")?.let { f -> f.isAccessible = true; f.get(winConfig) as? android.graphics.Rect }
+                ?: android.graphics.Rect()
+        }
+        // displayId: TaskInfo.displayId (present since API 29); fall back to 0 (main display)
+        // when absent or inaccessible so existing consumers behave identically on ROMs without it.
+        // Wrapped in its own runCatching (like the bounds read above): an AccessibleObject or
+        // IllegalAccessException from isAccessible/getInt must not propagate to the outer
+        // runCatching, which would make findTaskState return null and trigger a spurious
+        // PaneClosed storm on every watchdog tick.
+        val displayId = runCatching {
+            fieldByName(task, "displayId")?.let { f -> f.isAccessible = true; f.getInt(task) } ?: 0
+        }.getOrDefault(0)
+        return@runCatching TaskWindowState(taskId, mode, bounds.left, bounds.top, bounds.right, bounds.bottom, displayId)
+    }
+    null
+}.getOrNull()
+
+/**
+ * Queries IStatusBarService.isAppSuportSplit (BYD extension, transaction code 82) for [packageName].
+ * Shell uid holds STATUS_BAR, so this transact is permitted on DiLink head units.
+ * Returns 0 or 1 on success; -1 when the statusbar service is unavailable or the call throws.
+ */
+private fun queryStatusBarSplitSupport(packageName: String): Int = runCatching {
+    val smCls = Class.forName("android.os.ServiceManager")
+    val statusBar: IBinder = smCls.getMethod("getService", String::class.java)
+        .invoke(null, "statusbar") as? IBinder
+        ?: return@runCatching -1
+    val req = Parcel.obtain()
+    val rep = Parcel.obtain()
+    try {
+        req.writeInterfaceToken("com.android.internal.statusbar.IStatusBarService")
+        req.writeString(packageName)
+        // transact returns false when the service does not handle this code (BYD extension absent).
+        // An empty reply in that case would let readException/readInt silently return 0 → wrong false.
+        if (!statusBar.transact(82, req, rep, 0)) return@runCatching -1
+        rep.readException()
+        rep.readInt()
+    } finally {
+        req.recycle()
+        rep.recycle()
+    }
+}.getOrElse { -1 }
+
+/**
  * Reads [taskId]'s live windowing mode + display id via the same getTasks reflection as
  * [findTaskId] (TaskInfo.configuration.windowConfiguration.getWindowingMode() + TaskInfo.displayId).
  * Returns null when the task is not in the list (detached/dead) or reflection fails — callers
@@ -616,6 +1269,37 @@ private fun taskModeState(taskId: Int): TaskModeState? = runCatching {
     }
     null
 }.getOrNull()
+
+/**
+ * Returns the ATMS activityType of [taskId] (e.g. ACTIVITY_TYPE_STANDARD=1, ACTIVITY_TYPE_RECENTS=3),
+ * or -1 when the task is not found or the reflection call fails. Uses the same RootTaskInfo
+ * surface as [taskModeState] — WindowConfiguration.getActivityType() (AOSP 12 / API 31+).
+ * Callers that need a "safe" default should treat -1 as "type unknown, take the conservative path".
+ */
+internal fun taskActivityType(taskId: Int): Int = runCatching {
+    val iAtm = activityTaskManager()
+    val getTasks = iAtm.javaClass.getMethod(
+        "getTasks", Int::class.javaPrimitiveType, Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType,
+    )
+    val tasks = getTasks.invoke(iAtm, 100, false, false) as? List<*> ?: return@runCatching -1
+    for (task in tasks) {
+        if (task == null) continue
+        val idField = fieldByName(task, "taskId") ?: fieldByName(task, "id") ?: continue
+        idField.isAccessible = true
+        if (idField.getInt(task) != taskId) continue
+        val configField = fieldByName(task, "configuration") ?: return@runCatching -1
+        configField.isAccessible = true
+        val config = configField.get(task) ?: return@runCatching -1
+        val winConfigField = fieldByName(config, "windowConfiguration") ?: return@runCatching -1
+        winConfigField.isAccessible = true
+        val winConfig = winConfigField.get(config) ?: return@runCatching -1
+        return@runCatching winConfig.javaClass.getMethod("getActivityType").invoke(winConfig) as Int
+    }
+    -1
+}.getOrElse { e ->
+    android.util.Log.w("bydmate_helper", "taskActivityType(task=$taskId) failed: ${e.message}")
+    -1
+}
 
 /** moveRootTaskToDisplay(int,int) preferred, fallback moveTaskToDisplay(int,int). */
 private fun moveTaskToDisplayReflect(taskId: Int, displayId: Int) {
@@ -647,6 +1331,104 @@ private fun setTaskBoundsReflect(taskId: Int, left: Int, top: Int, right: Int, b
 private fun setFocusedTaskReflect(taskId: Int) {
     val iAtm = activityTaskManager()
     iAtm.javaClass.getMethod("setFocusedRootTask", Int::class.javaPrimitiveType).invoke(iAtm, taskId)
+}
+
+// --- Native 3:7 split surface (BYD extension of IActivityTaskManager, platformized firmware) ---
+
+/** Area ids reported by TX_SPLIT37_AREA_INFO, in reply order: narrow pane, wide pane, fullscreen. */
+private val SPLIT37_AREA_IDS = intArrayOf(
+    HelperBinderProtocol.SPLIT37_AREA_NARROW,
+    HelperBinderProtocol.SPLIT37_AREA_WIDE,
+    HelperBinderProtocol.SPLIT37_AREA_FULL,
+)
+
+/**
+ * Looks up a BYD split method by [name] and [paramCount] on the IActivityTaskManager proxy.
+ * Returns null on firmware without the platformized split surface (pre-OTA image), so the caller
+ * answers SPLIT37_UNSUPPORTED instead of turning a missing method into a generic failure.
+ */
+private fun splitMethod(iAtm: Any, name: String, paramCount: Int): java.lang.reflect.Method? =
+    iAtm.javaClass.methods.firstOrNull { it.name == name && it.parameterTypes.size == paramCount }
+
+/** getScreenAreaInfoForMulti(): 3 = split on screen, 4 = fullscreen; -1 when the method is absent. */
+private fun screenAreaMode(iAtm: Any): Int =
+    splitMethod(iAtm, "getScreenAreaInfoForMulti", 0)?.invoke(iAtm) as? Int ?: -1
+
+/**
+ * One getAllRootTaskInfos() snapshot, taken once per TX_SPLIT37_AREA_INFO request and shared by
+ * all three areas. Null when the method is absent (firmware without the platformized split).
+ */
+private fun rootTaskInfosSnapshot(iAtm: Any): List<Any>? =
+    (splitMethod(iAtm, "getAllRootTaskInfos", 0)?.invoke(iAtm) as? List<*>)?.filterNotNull()
+
+/**
+ * Bounds of the root task [rootTaskId], taken from the [infos] entry whose taskId matches.
+ * Null when the root is not listed or the bounds field is missing. Both fields go through
+ * [fieldByName], which walks the superclass chain: on API 32 RootTaskInfo declares `bounds`
+ * itself but inherits `taskId` from TaskInfo.
+ */
+private fun rootTaskBounds(infos: List<Any>, rootTaskId: Int): Rect? {
+    for (info in infos) {
+        val idField = fieldByName(info, "taskId") ?: continue
+        idField.isAccessible = true
+        if (idField.getInt(info) != rootTaskId) continue
+        val boundsField = fieldByName(info, "bounds") ?: return null
+        boundsField.isAccessible = true
+        return boundsField.get(info) as? Rect
+    }
+    return null
+}
+
+/**
+ * Writes a complete TX_SPLIT37_AREA_INFO reply for the failure paths: [status], an unreadable
+ * area mode and three absent roots. The client parses a fixed-length reply, so a short one on
+ * the failure path would read as a transport error ("daemon outdated") rather than a status.
+ */
+private fun writeAreaInfoFailure(reply: Parcel?, status: Int) {
+    reply?.writeInt(status)
+    reply?.writeInt(-1)
+    SPLIT37_AREA_IDS.forEach { _ ->
+        reply?.writeInt(-1)              // rootTaskId = absent
+        repeat(4) { reply?.writeInt(0) } // bounds
+    }
+}
+
+/**
+ * Testable core of TX_SPLIT37_MOVE_TASK: reparents [taskId] into the native split root
+ * [rootTaskId] with `am stack move-task` (= activity_task tx 54 moveTaskToRootTask; shell uid
+ * holds MANAGE_ACTIVITY_TASKS), then resizes it to the pane rect when that rect is non-empty.
+ * [toTop] is the onTop argument of the move: false parks the task at the bottom of the root, which
+ * is how the engine bounces a task out of a root it already lives in before raising it again.
+ * The move is the load-bearing step — a resize failure throws out to the caller's runCatching.
+ * `am stack move-task` prints `Error: ...` or an exception trace when it refuses and stays silent
+ * on success, so the outcome is read with the daemon-wide substring convention (see launchAppCore).
+ * Returns a HelperBinderProtocol.SPLIT37_* status.
+ */
+internal fun split37MoveTaskCore(
+    taskId: Int,
+    rootTaskId: Int,
+    left: Int,
+    top: Int,
+    right: Int,
+    bottom: Int,
+    toTop: Boolean,
+    shell: (String, List<String>) -> String,
+    resize: (Int, Int, Int, Int, Int) -> Unit,
+): Int {
+    // Ids are internal Ints but still go through positional args — nothing is interpolated.
+    val out = shell(
+        "am stack move-task \"\$1\" \"\$2\" $toTop",
+        listOf(taskId.toString(), rootTaskId.toString()),
+    )
+    if (out.contains("Error") || out.contains("Exception")) {
+        android.util.Log.w(
+            "bydmate_helper",
+            "split37 move-task task=$taskId root=$rootTaskId failed: ${out.take(200)}",
+        )
+        return HelperBinderProtocol.SPLIT37_FAILED
+    }
+    if (right > left && bottom > top) resize(taskId, left, top, right, bottom)
+    return HelperBinderProtocol.SPLIT37_OK
 }
 
 /**
@@ -686,11 +1468,7 @@ private fun createVirtualDisplay(
     return id
 }
 
-/**
- * Creates a full-screen Presentation on the private BYD IPC display and uses its SurfaceView as
- * the sink for a nested VirtualDisplay. All window work happens on the daemon main looper; the
- * Binder thread waits only until Surface creation.
- */
+/** Hosts a nested VirtualDisplay on the private BYD display for the Song L DM-i fallback. */
 private fun createPresentationVirtualDisplay(
     ctx: Context,
     displays: ConcurrentHashMap<Int, VirtualDisplay>,
@@ -765,18 +1543,6 @@ private fun createPresentationVirtualDisplay(
     return id
 }
 
-/** Runs a shell command (shell uid) and returns combined stdout/stderr. Mirrors CarControlImpl.exec. */
-private fun execShell(command: String): String {
-    val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
-    val out = process.inputStream.bufferedReader().use { it.readText().trim() }
-    val err = process.errorStream.bufferedReader().use { it.readText().trim() }
-    process.waitFor()
-    return buildString {
-        if (out.isNotBlank()) append(out)
-        if (err.isNotBlank()) { if (isNotEmpty()) append(" | STDERR: "); append(err) }
-    }.ifEmpty { "OK" }
-}
-
 private class CmdResult(val code: Int, val stdout: String)
 
 /**
@@ -784,7 +1550,8 @@ private class CmdResult(val code: Int, val stdout: String)
  * (e.g. an existing accessibility list read off the device) are passed as argv and NEVER re-parsed
  * by the shell — no injection, no quote-breakage. Returns ONLY stdout + exit code (stderr is sent
  * to /dev/null, so there is no second pipe to deadlock on and stdout can never be corrupted by an
- * stderr line — unlike [execShell], which merges them). Use this whenever success/output matters.
+ * stderr line). Use this when success/output matters and stderr must not reach the parser;
+ * use [shExecMerged] when am/monkey error messages on stderr must be detected.
  */
 private fun shExec(script: String, vararg args: String): CmdResult {
     val cmd = arrayListOf("sh", "-c", script, "sh")
@@ -795,6 +1562,136 @@ private fun shExec(script: String, vararg args: String): CmdResult {
     val out = process.inputStream.bufferedReader().use { it.readText().trim() }
     return CmdResult(process.waitFor(), out)
 }
+
+/**
+ * Like [shExec] but merges stderr into stdout via [ProcessBuilder.redirectErrorStream] — use this
+ * wherever the result is checked for "Error" or "Exception" text that am and monkey write to stderr.
+ * (AOSP ActivityManagerShellCommand uses getErrPrintWriter for "Error:" lines and
+ * "Exception occurred while executing '<cmd>'"; the single merged pipe cannot deadlock.)
+ * Do NOT use for component resolution ([resolveLaunchComponent]): stderr must not reach the parser.
+ */
+internal fun shExecMerged(script: String, vararg args: String): String {
+    val cmd = arrayListOf("sh", "-c", script, "sh")
+    cmd.addAll(args)
+    val process = ProcessBuilder(cmd)
+        .redirectErrorStream(true)
+        .start()
+    val out = process.inputStream.bufferedReader().use { it.readText().trim() }
+    process.waitFor()
+    return out.ifEmpty { "OK" }
+}
+
+/** Snapshot rate limit (see TX_CLUSTER_DISPLAY_DIAG): one at a time, at most one per minute. */
+private val clusterDiagLock = Any()
+private var clusterDiagThread: Thread? = null
+private var clusterDiagLastMs = Long.MIN_VALUE / 2
+private var clusterDiagCache: List<String>? = null
+private var clusterDiagReplayWhenDone = false
+private const val CLUSTER_DIAG_MIN_INTERVAL_MS = 60_000L
+
+/**
+ * Bounded variant of [shExecMerged] for the read-only diagnostic snapshot: a dumpsys on an unknown
+ * firmware can print megabytes or hang, and neither may stall the daemon's binder thread. stdout is
+ * drained on a background thread into a buffer capped at [maxBytes]; if the process outlives
+ * [timeoutMs] it is killed and whatever was read is returned with a `[timeout Nms]` marker line.
+ * Used ONLY by the diagnostic snapshots ([logClusterDisplayDiag], [logA11yFrameworkState]) — the
+ * production callers stay on [shExec]/[shExecMerged].
+ */
+private fun shExecBounded(script: String, timeoutMs: Long = 4000L, maxBytes: Int = 64 * 1024): String {
+    val process = ProcessBuilder("sh", "-c", script).redirectErrorStream(true).start()
+    val buffer = StringBuilder()
+    val reader = Thread {
+        runCatching {
+            process.inputStream.reader().use { stream ->
+                val chunk = CharArray(8192)
+                var total = 0
+                while (total < maxBytes) {
+                    val n = stream.read(chunk)
+                    if (n < 0) break
+                    val take = minOf(n, maxBytes - total)
+                    synchronized(buffer) { buffer.append(chunk, 0, take) }
+                    total += take
+                }
+            }
+        }
+    }
+    reader.isDaemon = true
+    reader.start()
+    val finished = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    if (!finished) process.destroyForcibly()
+    reader.join(500L)
+    val out = synchronized(buffer) { buffer.toString() }.trim()
+    return if (finished) out else (out + "\n[timeout ${timeoutMs}ms]")
+}
+
+/**
+ * Read-only cluster-display snapshot for cars where the projection display never resolves
+ * (DiLink 3/4, issue #182). Collection only: props, the DisplayManager and SurfaceFlinger display
+ * lists, the projection services and which SurfaceControl methods are visible under shell uid.
+ * Nothing is invoked or written — no auto_container command, no SurfaceControl call, no settings.
+ * Every command is individually guarded so one failure still leaves the rest of the snapshot in
+ * the log, under the daemon tag the app's log recorder already captures.
+ */
+private fun logClusterDisplayDiag(): List<String> {
+    val tag = "bydmate_helper"
+    val emitted = ArrayList<String>()
+    var cmds = 0
+    var errors = 0
+    var timeouts = 0
+    fun run(script: String, timeoutMs: Long = 4000L, maxBytes: Int = 64 * 1024): String {
+        cmds++
+        val out = runCatching { shExecBounded(script, timeoutMs, maxBytes) }
+            .getOrElse { errors++; "" }
+        if (out.contains("[timeout ")) timeouts++
+        return out
+    }
+    fun emit(line: String) {
+        val full = "cdiag: " + line.take(300)
+        emitted += full
+        android.util.Log.i(tag, full)
+    }
+
+    val propScript = ClusterDisplayDiag.PROP_KEYS.joinToString("; ") { "echo $it=$(getprop $it)" }
+    emit(ClusterDisplayDiag.propsLine(run(propScript)) + " uid=${android.os.Process.myUid()}")
+    emit(ClusterDisplayDiag.bydPropsLine(run("getprop | grep '^\\[ro\\.byd\\.'")))
+    emit(ClusterDisplayDiag.servicesLine(
+        run("service list | grep -i container"),
+        run("service check auto_container"),
+        run("service check AutoContainer"),
+        run("ls /dev/graphics 2>/dev/null | tr '\\n' ' '"),
+    ))
+
+    val displays = ClusterDisplayDiag.displayLines(run("dumpsys display"))
+    displays.kept.forEach { emit("display: $it") }
+    if (displays.dropped > 0) emit("display: +${displays.dropped} more matched lines dropped")
+
+    var sf = run("dumpsys SurfaceFlinger --displays")
+    if (ClusterDisplayDiag.surfaceFlingerFallbackNeeded(sf)) sf = run("dumpsys SurfaceFlinger")
+    val sfLines = ClusterDisplayDiag.surfaceFlingerLines(sf)
+    sfLines.kept.forEach { emit("sf: $it") }
+    if (sfLines.dropped > 0) emit("sf: +${sfLines.dropped} more matched lines dropped")
+
+    // Reflective visibility only: we report which SurfaceControl entry points this firmware has,
+    // and never call any of them. Hidden-API filtering can throw on some builds, hence the guard.
+    val probed = listOf(
+        "createDisplay", "destroyDisplay", "setDisplaySurface", "setDisplayProjection",
+        "setDisplayLayerStack", "getPhysicalDisplayIds", "getPhysicalDisplayToken", "getBuiltInDisplay",
+    )
+    runCatching {
+        val names = Class.forName("android.view.SurfaceControl").declaredMethods.map { it.name }.toSet()
+        val (present, missing) = probed.partition { it in names }
+        emit("surfacecontrol present=$present missing=$missing")
+    }.onFailure { emit("surfacecontrol unavailable: ${it.javaClass.simpleName}") }
+
+    emit("done cmds=$cmds errors=$errors timeouts=$timeouts")
+    return emitted
+}
+
+/** Single named gateway: pins all am/monkey prod callers to the merged-stream runner.
+ *  Extracting a val (not an inline lambda at each site) means the wiring is detectable
+ *  by tests — reverting any site back to shExec would break [ShExecMergedTest.amShell]. */
+internal val amShell: (String, List<String>) -> String =
+    { script, args -> shExecMerged(script, *args.toTypedArray()) }
 
 /** The single gateway for auto_container: hard whitelist {16, 18, 0}, device id fixed
  *  at 1000. Anything else is a programming error, not a runtime input. */
@@ -866,16 +1763,127 @@ private fun enableAccessibilityService(): Boolean {
 }
 
 /**
- * Self-grants notification-listener access for our MediaSessionListenerService stub, mirroring
- * enableAccessibilityService's remove-wait-readd cycle: NotificationManagerService's Settings
- * observer only re-binds listeners when the enabled_notification_listeners string actually
- * changes value, so re-adding a component already present would silently no-op after a crash.
+ * Recovers the a11y service on Android 10 after the firmware's quickboot force-stop parked our
+ * component in AccessibilityManagerService's UserState.mBindingServices (AOSP Q: no
+ * ACTION_PACKAGE_RESTARTED broadcast, so AMS re-binds into the dying package and the bind never
+ * completes; updateServicesLocked skips such components forever). A settings rewrite cannot leave
+ * that state — only PackageMonitor.onHandleForceStop clears it, which
+ * IActivityManager.forceStopPackage triggers. So: force-stop ourselves, re-enable, restart.
+ *
+ * The app is killed by step 1, so it never sees the reply; the daemon survives (shell uid, own
+ * process) and finishes the sequence. Kept dumb and logged — the SDK gate lives in the app.
+ */
+private fun recoverAccessibilityService(): Boolean {
+    val tag = "bydmate_helper"
+    val pkg = HelperBinderProtocol.APP_PACKAGE
+    android.util.Log.w(tag, "a11y recover: force-stopping $pkg (AOSP Q stuck binding)")
+    try {
+        forceStopPackage(pkg)
+    } catch (e: Throwable) {
+        android.util.Log.w(tag, "a11y recover: force-stop failed: ${e.javaClass.simpleName}: ${e.message}")
+        return false
+    }
+    Thread.sleep(700L)  // let AccessibilityManagerService process onHandleForceStop
+    // The app is dead from here on, so the restart goes out FIRST and does not depend on anything
+    // else in this function: a hung `settings` must not leave TrackingService stopped until boot.
+    // TrackingService is not exported, so shell uid cannot start it directly; BootReceiver is
+    // (BOOT_COMPLETED needs it) and its WorkManager chain starts the service. Explicit component +
+    // include-stopped-packages: the force-stop just put the package into the stopped state.
+    var am = ""
+    var restarted = false
+    for (attempt in 1..2) {
+        am = runCatching {
+            amShell(
+                "am broadcast --include-stopped-packages -a com.bydmate.app.action.RECOVER_START -n \"\$1\"",
+                listOf("$pkg/com.bydmate.app.service.BootReceiver"),
+            )
+        }.getOrElse { "broadcast failed: ${it.javaClass.simpleName}: ${it.message}" }
+        restarted = am.contains("Broadcast completed")
+        if (restarted) break
+        android.util.Log.w(tag, "a11y recover: restart broadcast attempt $attempt failed: ${am.take(200)}")
+        Thread.sleep(1000L)
+    }
+    // Re-assert the a11y setting: onHandleForceStop removed us from the enabled set as well.
+    val ok = try {
+        enableAccessibilityService()
+    } catch (e: Throwable) {
+        android.util.Log.w(tag, "a11y recover: re-assert failed: ${e.javaClass.simpleName}: ${e.message}")
+        false
+    }
+    android.util.Log.i(tag, "a11y recover: reassert=$ok restart=$restarted am=${am.take(200)}")
+    logA11yFrameworkStateAsync(ok)  // diagnostics only
+    return ok && restarted
+}
+
+/**
+ * Logs the framework's own accessibility bookkeeping after a re-assert, under the daemon tag the
+ * app's log recorder already captures. `dumpsys accessibility` prints the AOSP UserState sets
+ * (Bound / Enabled / Binding services) on one line each; `dumpsys activity services` shows whether
+ * ActivityManager still holds a ServiceRecord + connection for our key filter. Field evidence for
+ * the Android 10 "stuck in mBindingServices" case that a settings rewrite cannot leave.
+ * Read-only: two dumpsys calls, output trimmed to a handful of lines.
+ */
+private fun logA11yFrameworkStateAsync(reassertOk: Boolean) {
+    val t = Thread({ runCatching { logA11yFrameworkState(reassertOk) } }, "bydmate-a11ydiag")
+    t.isDaemon = true
+    t.start()
+}
+
+/** Diagnostics only; every dumpsys is time- and size-bounded so it can never wedge the daemon. */
+private fun logA11yFrameworkState(reassertOk: Boolean) {
+    val tag = "bydmate_helper"
+    val a11y = shExecBounded("dumpsys accessibility").lines()
+    val keep = a11y.filter { l ->
+        l.contains("User state[") || l.contains("services:{") || l.contains("bydmate", ignoreCase = true)
+    }.take(12)
+    android.util.Log.i(tag, "a11y state after reassert ok=$reassertOk: sdk=${android.os.Build.VERSION.SDK_INT} lines=${a11y.size}")
+    keep.forEach { android.util.Log.i(tag, "a11y: " + it.trim().take(300)) }
+    val pid = shExecBounded("pidof com.bydmate.app")
+    val stopped = shExecBounded("dumpsys package com.bydmate.app").lines()
+        .firstOrNull { it.contains("stopped=", ignoreCase = true) }?.trim()?.take(200)
+    android.util.Log.i(tag, "pkg: pid=${pid.ifEmpty { "none" }} $stopped")
+    val am = shExecBounded("dumpsys activity services com.bydmate.app").lines()
+    val start = am.indexOfFirst { it.contains("SteeringWheelKeyService") }
+    if (start < 0) {
+        android.util.Log.i(tag, "am: no ServiceRecord for SteeringWheelKeyService (lines=${am.size})")
+        return
+    }
+    am.drop(start).take(30).forEach { android.util.Log.i(tag, "am: " + it.trim().take(300)) }
+}
+
+/**
+ * Self-grants notification-listener access for our MediaSessionListenerService stub.
+ *
+ * Primary: `cmd notification allow_listener <component>` — the official NMS API that writes to
+ * the canonical approved list inside NotificationManagerService. On some firmwares (Sea Lion 06/07)
+ * NMS reconciles enabled_notification_listeners from that internal list on every Settings change,
+ * so a raw settings-put entry is stripped immediately; cmd allow_listener is the only path that
+ * sticks (donor-verified). Verified by reading back the secure setting.
+ *
+ * Fallback: remove-wait-readd settings-put cycle — for firmwares that predate `cmd notification`.
+ * NMS's Settings observer only re-binds listeners when the string actually changes value, so
+ * re-adding a component already present would silently no-op after a crash.
  * Read-modify-write preserves other apps' listeners (our component is the only one we ever touch).
+ *
  * App-scoped, reversible Secure setting only; touches nothing on the vehicle (no autoservice/CAN).
  */
 private fun enableNotificationListener(): Boolean {
     val component = HelperBinderProtocol.NOTIFICATION_LISTENER_COMPONENT
     val target = canonicalComponent(component)
+
+    // Primary path: cmd notification allow_listener writes to NMS's canonical approved list.
+    // On firmwares where NMS reconciles the raw secure setting from that list, raw settings-put
+    // entries are stripped on the next reconciliation cycle; this path is immune to that.
+    // Readback is gated on exit code == 0: a stale raw entry in the setting could otherwise
+    // false-positive the check when the canonical NMS grant is absent (the exact reconciliation
+    // case), causing the function to return true before the fallback ever runs.
+    val cmdResult = shExec("cmd notification allow_listener \"\$1\"", component)
+    if (cmdResult.code == 0) {
+        val afterCmd = (readSecure("enabled_notification_listeners") ?: "").split(':').filter { it.isNotEmpty() }
+        if (afterCmd.any { canonicalComponent(it) == target }) return true
+    }
+
+    // Fallback: remove-wait-readd settings-put for firmwares without `cmd notification`.
     val current = readSecure("enabled_notification_listeners") ?: return false
     val others = current.split(':').filter { it.isNotEmpty() && canonicalComponent(it) != target }
     if (shExec("settings put secure enabled_notification_listeners \"\$1\"", others.joinToString(":")).code != 0) return false
@@ -992,41 +2000,325 @@ private fun readSecure(key: String): String? {
 /**
  * Resolves [packageName]'s launcher component via `cmd package resolve-activity`. Returns null
  * when nothing resolves or the package name is not a valid Android package name.
- * Defense-in-depth: the result (and the package) is interpolated into `sh -c` by callers —
- * Android package names are strictly [A-Za-z0-9_.]; reject anything else so a caller can't
- * smuggle shell metacharacters into this shell-uid daemon. No real package is ever rejected.
+ * Package validation (strict [A-Za-z0-9_.] regex) runs before any shell command; the package
+ * is then passed as a positional arg ($1) so it is never re-parsed by the shell.
  */
 private fun resolveLaunchComponent(packageName: String): String? {
     if (!packageName.matches(Regex("[A-Za-z0-9_.]+"))) return null
-    val resolve = execShell("cmd package resolve-activity --brief -c android.intent.category.LAUNCHER $packageName")
-    return resolve.lineSequence().firstOrNull { it.contains("/") && !it.startsWith("No ") }?.trim()
+    val resolve = shExec("cmd package resolve-activity --brief -c android.intent.category.LAUNCHER \"\$1\"", packageName)
+    return resolve.stdout.lineSequence().firstOrNull { it.contains("/") && !it.startsWith("No ") }?.trim()
+}
+
+/**
+ * Testable core of the three-strategy app launch. When [windowingMode] is non-null, the
+ * am strategies carry `--windowingMode M --display D` so the task is born in the target
+ * windowing mode (freeform cold-launch fix, on-car 2026-07-28 #151: trampoline apps like
+ * YouTube settle inside the freeform task when the mode is applied at creation time rather
+ * than flipped post-launch). The monkey fallback is always plain — monkey has no
+ * windowing-mode flag. Package-name validation is the first gate; no shell command is
+ * issued for an invalid name.
+ *
+ * [windowingMode] null is the plain path and [activityType] is then unused, but the plain path
+ * still splits on the display: [displayId] != 0 births the task on the target display and has NO
+ * monkey fallback — monkey cannot target a display, so it would put the app on the main screen and
+ * report a success the caller ([launchAndForce]) cannot distinguish from a real one. Only
+ * [windowingMode] null with [displayId] == 0 is the original launchApp behavior, monkey included.
+ */
+internal fun launchAppCore(
+    packageName: String,
+    windowingMode: Int?,
+    displayId: Int,
+    activityType: Int,
+    resolveComponent: (String) -> String?,
+    shell: (String, List<String>) -> String,
+): Boolean {
+    if (!packageName.matches(Regex("[A-Za-z0-9_.]+"))) return false
+    // STANDARD is what `am start` assigns by default — only RECENTS needs the explicit flag.
+    val typeFlag = if (activityType == ACTIVITY_TYPE_RECENTS) "--activityType $ACTIVITY_TYPE_RECENTS " else ""
+    // displayId != 0 births the task on the target display: 2GIS/Qt dies on a cross-display move.
+    val modePrefix = when {
+        windowingMode != null -> "--windowingMode $windowingMode $typeFlag--display $displayId "
+        displayId != 0 -> "--display $displayId "
+        else -> ""
+    }
+    val component = resolveComponent(packageName)
+    if (component != null) {
+        // Component is passed as positional "$1" — never interpolated into the sh -c string.
+        val r = shell("am start ${modePrefix}-n \"\$1\"", listOf(component))
+        if (!r.contains("Error")) return true
+    }
+    val r2 = shell("am start ${modePrefix}-a android.intent.action.MAIN \"\$1\"", listOf(packageName))
+    if (!r2.contains("Error")) return true
+    // A display-targeted launch has no monkey fallback: monkey has no --display flag, so it would
+    // start the app on the main screen and return "success" for a target the caller never got.
+    if (windowingMode == null && displayId != 0) return false
+    val r3 = shell("monkey -p \"\$1\" -c android.intent.category.LAUNCHER 1", listOf(packageName))
+    return !r3.contains("Error") && !r3.contains("error")
 }
 
 /**
  * Launches [packageName] via am/monkey strategies. Returns true if a launch command ran without an
  * obvious "Error". Mirrors CarControlImpl.launchApp (simplified to a boolean).
  */
-private fun launchApp(packageName: String): Boolean {
+private fun launchApp(packageName: String): Boolean =
+    launchAppCore(packageName, null, 0, ACTIVITY_TYPE_STANDARD, ::resolveLaunchComponent, amShell)
+
+/**
+ * Testable core of the "raise existing freeform task" operation: issues the single
+ * `am start --windowingMode 5 [--activityType 3] --display <displayId> -n <component>` command
+ * that brings a running freeform task back to front without cold-launching it.
+ *
+ * Package regex-gated (same rule as [launchAppCore]). Returns false when the package is
+ * invalid, the component cannot be resolved (app is not installed / no LAUNCHER activity),
+ * or the shell command reports an error. Does NOT fall back to MAIN or monkey strategies —
+ * those would open a second fullscreen task, collapsing the split.
+ *
+ * Note: `am start -n` WILL cold-launch a dead pane app (in freeform on the given display,
+ * by virtue of the --windowingMode 5 flag); this is the intended recovery behavior when a
+ * pane app was killed while the split session was active.
+ *
+ * The freeform placement itself is delegated to [ensureTypedFreeform] — the single owner of
+ * the "a live freeform task must match its desired activityType" invariant, shared with
+ * [setWindowingModeCompat]; [desiredActivityType] is the caller's choice (split panes:
+ * STANDARD, cluster projection: RECENTS).
+ * Its [IllegalStateException] is mapped back to this function's Boolean contract.
+ *
+ * NOTE: the defaults of [taskIdForPackage] / [getActivityType] report "no task / unknown type",
+ * which disables the STANDARD handling; the default [stateOf] disables the non-destructive freeform
+ * probe. Production call sites must pass real implementations.
+ *
+ * Follows the launchAppCore/setWindowingModeCompat lambda-injection idiom so tests can
+ * assert the exact shell command without spawning a real shell.
+ */
+internal fun raiseFreeformTaskCore(
+    packageName: String,
+    displayId: Int,
+    desiredActivityType: Int,
+    resolveComponent: (String) -> String?,
+    shell: (String, List<String>) -> String,
+    taskIdForPackage: (String) -> Int = { _ -> -1 },
+    getActivityType: (Int) -> Int = { _ -> -1 },
+    sleep: (Long) -> Unit = { _ -> },
+    stateOf: (Int) -> TaskModeState? = { _ -> null },
+): Boolean {
     if (!packageName.matches(Regex("[A-Za-z0-9_.]+"))) return false
-    val component = resolveLaunchComponent(packageName)
-    if (component != null) {
-        val r = execShell("am start -n $component")
-        if (!r.contains("Error")) return true
+    val component = resolveComponent(packageName) ?: return false
+    val taskId = taskIdForPackage(packageName)
+    val activityType = if (taskId != -1) getActivityType(taskId) else -1
+    return try {
+        ensureTypedFreeform(taskId, activityType, desiredActivityType, displayId, component, shell, sleep, stateOf)
+        true
+    } catch (e: IllegalStateException) {
+        false
     }
-    val r2 = execShell("am start -a android.intent.action.MAIN $packageName")
-    if (!r2.contains("Error")) return true
-    val r3 = execShell("monkey -p $packageName -c android.intent.category.LAUNCHER 1")
-    return !r3.contains("Error") && !r3.contains("error")
+}
+
+/**
+ * The single owner of the freeform typing invariant: **a live freeform task must match its
+ * desired activityType.** `am start --activityType N` types a task only when it is CREATED — the
+ * flag never re-types a live task (on-car 390: both panes read type=standard mode=freeform after
+ * an in-place flip), so a live task of the wrong type has to be removed and recreated.
+ * Both freeform entry points — [raiseFreeformTaskCore] and the freeform branch of
+ * [setWindowingModeCompat] — go through here instead of each deciding for itself.
+ *
+ * [desiredActivityType] is the caller's choice: split panes ask for STANDARD (392), cluster
+ * projection asks for RECENTS. Migration note: v3.9 created its panes as RECENTS, so on the
+ * first 392 split the live panes are re-typed through the remove branch below.
+ *
+ * Three cases, by [liveActivityType]:
+ * - Already the desired type: light path — the single `am start` with the freeform flags re-uses
+ *   the existing task and applies mode+display to it (validated on-car; the task id survives).
+ * - The other half of the STANDARD/RECENTS pair: freeform probe (below) → `am stack remove` →
+ *   settle → the same `am start`, which recreates the task with the desired type. The app PROCESS
+ *   and its services survive the remove (only activities die), so media keeps playing and the
+ *   navigator restores its own guidance session.
+ * - No task ([taskId] == -1), unknown type (-1: reflection broken, task not found) or an exotic
+ *   type (HOME/ASSISTANT/DREAM): the same single `am start`, which creates the task with the flags
+ *   applied. Nothing is removed on a guess — killing activities blindly is worse than a mistyped
+ *   task, and there may be no task at all.
+ *
+ * The remove is DESTRUCTIVE, so the retype branch asks first: on firmwares where freeform never
+ * activates the recreate can never succeed, and until now every cluster-send press killed the
+ * user's live navigation session before [launchFreeformCore] discovered that from the state
+ * readback (field journals DiLink 5.1: "task recreated by setMode", guidance lost). [stateOf]
+ * enables the probe — the same light `am start` WITHOUT `--activityType`, which applies mode+display
+ * to the EXISTING task and keeps its id. If the mode does not become freeform, this throws an
+ * [isFreeformUnsupported]-shaped message (→ UNAVAILABLE) with the task untouched. The post-probe
+ * read is repeated up to twice more, each after a settle pause, so a slow-but-working firmware is
+ * not misread as unsupported, and an unreadable state (null, including the default [stateOf]) takes
+ * the legacy remove path — an unknown must not change fleet behavior.
+ *
+ * Throws [IllegalStateException] when the probe, the remove or the start fails. A swallowed
+ * remove failure would let the relaunch deliver its intent to the still-alive task and report
+ * success with the pane left un-retyped (codex pre-release audit 2026-07-16); "Exception occurred
+ * while executing" is the am wording for an in-process throw, while a missing task prints nothing and
+ * the relaunch then correctly creates a fresh task.
+ */
+internal fun ensureTypedFreeform(
+    taskId: Int,
+    liveActivityType: Int,
+    desiredActivityType: Int,
+    displayId: Int,
+    component: String,
+    shell: (String, List<String>) -> String,
+    sleep: (Long) -> Unit,
+    stateOf: (Int) -> TaskModeState? = { _ -> null },
+) {
+    // Only the STANDARD <-> RECENTS pair is ever retyped. Exotic live types (HOME/ASSISTANT/DREAM)
+    // and the unknown -1 are left untouched: nothing this daemon places into freeform is supposed
+    // to carry them, and removing such a task would be a behavior change on the RECENTS direction
+    // that v3.9 never made (fleet safety).
+    val retypable = liveActivityType == ACTIVITY_TYPE_STANDARD || liveActivityType == ACTIVITY_TYPE_RECENTS
+    if (taskId != -1 && retypable && liveActivityType != desiredActivityType) {
+        // Non-destructive probe before the remove (see KDoc). A null pre-read means the state is
+        // unreadable (or the caller passed no reader): no probe, legacy sequence unchanged.
+        if (stateOf(taskId) != null) {
+            // The light path — mode+display applied to the EXISTING task, no --activityType, so
+            // the task keeps its id and the navigator keeps its guidance session.
+            val probe = shell(
+                "am start --windowingMode $WINDOWING_MODE_FREEFORM --display $displayId -n \"\$1\"",
+                listOf(component),
+            )
+            if (probe.contains("Error") || probe.contains("Exception")) {
+                throw IllegalStateException("am start freeform failed: ${probe.take(200)}")
+            }
+            // Settle tolerance: a slow-but-working firmware can still report the old mode on the
+            // first reads — only a third stale read means freeform is really off. The loop stops
+            // at the first read that already shows freeform.
+            var after: TaskModeState? = null
+            for (attempt in 0 until 3) {
+                sleep(500L)
+                after = stateOf(taskId)
+                if (after?.windowingMode == WINDOWING_MODE_FREEFORM) break
+            }
+            if (after != null && after.windowingMode != WINDOWING_MODE_FREEFORM) {
+                // Wording matches [isFreeformUnsupported] so launchFreeformCore reports UNAVAILABLE.
+                throw IllegalStateException(
+                    "freeform not supported: probe start coerced task=$taskId to mode=${after.windowingMode}"
+                )
+            }
+        }
+        // taskId is an internal Int — safe to inline; no user/PM input involved.
+        val removed = shell("am stack remove $taskId", emptyList())
+        if (removed.contains("Error") || removed.contains("Exception")) {
+            throw IllegalStateException("am stack remove failed: ${removed.take(200)}")
+        }
+        sleep(500L)
+    }
+    // STANDARD is the default type `am start` assigns at task creation — the flag is only
+    // needed for RECENTS. Component is passed as positional "$1" — never interpolated.
+    val typeFlag = if (desiredActivityType == ACTIVITY_TYPE_RECENTS) "--activityType $ACTIVITY_TYPE_RECENTS " else ""
+    val out = shell("am start --windowingMode $WINDOWING_MODE_FREEFORM $typeFlag--display $displayId -n \"\$1\"", listOf(component))
+    // Same failure wording as the remove above: am prints "Error:" for a rejected intent and
+    // "Exception occurred while executing" for an in-process throw. Both mean the pane is not there.
+    if (out.contains("Error") || out.contains("Exception")) {
+        throw IllegalStateException("am start freeform failed: ${out.take(200)}")
+    }
+}
+
+/**
+ * Reflects all static int/long constants out of [android.hardware.bydauto.BYDAutoFeatureIds]
+ * and [android.hardware.bydauto.BYDAutoConstants] (and all their `declaredClasses`) and
+ * returns them as sorted "ClassName.FIELD_NAME=value" lines joined with `\n`.
+ *
+ * A class absent from the firmware is silently skipped — empty section, no error. The
+ * [classResolver] is wrapped in [runCatching] so it may either return null or throw
+ * (e.g. [ClassNotFoundException] from the production `Class.forName` path) — both are treated
+ * as "class not present, skip". This makes the function safe on non-BYD ROMs and on firmwares
+ * where only one of the two SDK classes exists.
+ *
+ * Each class in [toScan] is guarded by its own [runCatching] with a local line buffer: a class
+ * whose `<clinit>` triggers [ExceptionInInitializerError] or whose field type is unresolvable
+ * ([NoClassDefFoundError] from [Class.declaredFields]) only loses its own section; the rest of
+ * the dump is unaffected. `getDeclaredClasses()` itself is also guarded for the same reason.
+ *
+ * The field filter excludes `$`-prefixed names (Kotlin compiler synthetics such as `$stable`).
+ * Real SDK constants never start with `$`; the filter is a no-op for Java-compiled BYD SDK classes
+ * but prevents noise when the resolver is fed Kotlin test fixtures.
+ *
+ * Plain reflection only — no HiddenApiBypass, in line with the file-level comment. Under
+ * app_process, hidden-API enforcement is inactive, so Class.forName works for BYD SDK classes.
+ *
+ * [classResolver] is injectable for tests: feed synthetic classes without the real BYD SDK.
+ */
+internal fun dumpFidsCore(classResolver: (String) -> Class<*>?): String {
+    val targets = listOf(
+        "android.hardware.bydauto.BYDAutoFeatureIds",
+        "android.hardware.bydauto.BYDAutoConstants",
+    )
+    val lines = mutableListOf<String>()
+    for (className in targets) {
+        val rootClass = runCatching { classResolver(className) }.getOrNull() ?: continue
+        val toScan = mutableListOf(rootClass)
+        toScan.addAll(
+            runCatching { rootClass.declaredClasses }.getOrElse {
+                android.util.Log.w("bydmate_helper", "dumpFids: declaredClasses failed for ${rootClass.name}", it)
+                emptyArray()
+            }
+        )
+        for (cls in toScan) {
+            val classLines = runCatching {
+                val prefix = cls.simpleName.ifEmpty { cls.name }
+                cls.declaredFields
+                    .filter {
+                        java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                            !it.name.startsWith("$") &&
+                            (it.type == Int::class.javaPrimitiveType ||
+                                it.type == Long::class.javaPrimitiveType)
+                    }
+                    .map { field ->
+                        field.isAccessible = true
+                        "$prefix.${field.name}=${field.get(null)}"
+                    }
+            }.getOrElse {
+                android.util.Log.w("bydmate_helper", "dumpFids: skipping ${cls.name}", it)
+                emptyList()
+            }
+            lines += classLines
+        }
+    }
+    return lines.sorted().joinToString("\n")
+}
+
+/**
+ * Cache for the last TX_DUMP_FIDS result. Built on offset==0 and reused for subsequent
+ * offsets within the same chunked sequence. Volatile: the binder thread pool may dispatch
+ * concurrent calls (rare in practice, safe because the dump is deterministic reflection).
+ */
+@Volatile private var dumpFidsCache: String? = null
+
+/**
+ * Extracts a single chunk of [chunkMax] bytes from [dumpUtf8Bytes] starting at [offset].
+ * Returns an empty ByteArray when [offset] >= [dumpUtf8Bytes].size (past the end).
+ * Exposed as `internal` so the test suite can exercise chunking independently of reflection.
+ */
+internal fun dumpFidsChunkBytes(
+    dumpUtf8Bytes: ByteArray,
+    offset: Int,
+    chunkMax: Int = HelperBinderProtocol.DUMP_CHUNK_MAX,
+): ByteArray {
+    if (offset >= dumpUtf8Bytes.size) return ByteArray(0)
+    val end = minOf(offset + chunkMax, dumpUtf8Bytes.size)
+    return dumpUtf8Bytes.copyOfRange(offset, end)
 }
 
 /**
  * Finds [packageName]'s task id, launching the app and polling (16 x 500ms + settle pause)
  * when it is not running yet. Shared by launchAndForce and launchFreeform. Blocking.
+ * [windowingMode] non-null (freeform path only) passes the mode and [activityType] to the launch
+ * command so the task is born freeform with the right type; null (plain path, launchAndForce)
+ * ignores [activityType] and, when [displayId] != 0, births the task on that display without the
+ * monkey fallback (see [launchAppCore]).
  */
-private fun resolveOrLaunchTask(packageName: String): Int {
+private fun resolveOrLaunchTask(
+    packageName: String,
+    windowingMode: Int? = null,
+    displayId: Int = 0,
+    activityType: Int,
+): Int {
     var taskId = findTaskId(packageName)
     if (taskId <= 0) {
-        launchApp(packageName)
+        launchAppCore(packageName, windowingMode, displayId, activityType, ::resolveLaunchComponent, amShell)
         var attempt = 1
         while (attempt < 16) {
             taskId = findTaskId(packageName)
@@ -1041,17 +2333,22 @@ private fun resolveOrLaunchTask(packageName: String): Int {
 
 /**
  * Launches [packageName] on [displayId] and pins it there with a short persistence loop
- * (move -> bounds, x2). The target is deliberately not focused: on DiLink 5, focusing a task on
- * the nested VirtualDisplay hides the display-2 anchor Activity, destroys its Surface, and makes
- * the VirtualDisplay disappear. Returns true once redirection ran.
+ * (move -> bounds, x2). The target is deliberately not focused: on the DM hidden-display path,
+ * focusing the nested VirtualDisplay hides the display-2 anchor and destroys its Surface.
+ * Returns true once redirection ran; apps that die during the move
+ * (2GIS/Qt) are relaunched ONCE on the target display, and a failed relaunch returns false.
+ * Mirrors CarControlImpl.launchAndForce.
  * Blocking (Thread.sleep) — runs on a binder threadpool thread; the app side uses a 15s timeout.
  */
 private fun launchAndForce(packageName: String, displayId: Int, width: Int, height: Int): Boolean {
-    val taskId = resolveOrLaunchTask(packageName)
+    // Not-yet-running apps are born on the target display — 2GIS/Qt dies if moved there instead.
+    val taskId = resolveOrLaunchTask(
+        packageName, windowingMode = null, displayId = displayId, activityType = ACTIVITY_TYPE_STANDARD,
+    )
     if (taskId <= 0) return false
     // Each redirect op is best-effort, mirroring CarControlImpl (every reflective call there returns
     // a status string and swallows its own exception). resizeTask in particular throws "not allowed"
-    // on a fullscreen task — that must NOT abort the move or bubble up as a launchAndForce
+    // on a fullscreen task — that must NOT abort the move/focus or bubble up as a launchAndForce
     // failure, otherwise the caller tears down the VirtualDisplay Navi was just moved onto before it
     // can render. The VD size (mini=640 / full=1280) already sets the geometry, so a resize failure
     // is harmless.
@@ -1059,6 +2356,18 @@ private fun launchAndForce(packageName: String, displayId: Int, width: Int, heig
         runCatching { moveTaskToDisplayReflect(taskId, displayId) }
         runCatching { setTaskBoundsReflect(taskId, 0, 0, width, height) }
         Thread.sleep(200L)
+    }
+    // Settle before the liveness check: findTaskId matches topActivity OR baseActivity, so a task
+    // whose process is dying can still be listed by getTasks with a stale baseActivity and hide the
+    // death from the check below.
+    Thread.sleep(500L)
+    // App died during the move (2GIS/Qt) → relaunch ONCE born on the display; no retry loop.
+    if (findTaskId(packageName) <= 0) {
+        val rebornId = resolveOrLaunchTask(
+            packageName, windowingMode = null, displayId = displayId, activityType = ACTIVITY_TYPE_STANDARD,
+        )
+        if (rebornId <= 0) return false
+        runCatching { setTaskBoundsReflect(rebornId, 0, 0, width, height) }
     }
     return true
 }
@@ -1073,6 +2382,20 @@ internal object FreeformResultCodes {
 // WindowConfiguration windowing modes (android.app; hidden constants, stable since API 28).
 internal const val WINDOWING_MODE_FULLSCREEN = 1
 internal const val WINDOWING_MODE_FREEFORM = 5
+// Who wants which type (392): split panes are STANDARD, cluster projection stays RECENTS.
+// RECENTS suppresses the AOSP-12 freeform DecorCaption (hasWindowDecorCaption() is true only for
+// activityType == STANDARD && windowingMode == FREEFORM), which is why v3.9 created panes as
+// RECENTS — but recents-typed tasks nest as leaves under one shared root task, so their input
+// shields are not cropped to the pane bounds and only the top pane receives touch (on-car
+// 2026-07-29, ActivityRecordInputSink fullscreen; memory project_split_screen_wave.md). Panes
+// therefore take the caption and keep their own root task; the cluster has a single pane and is
+// unaffected, so it keeps RECENTS.
+// IMPORTANT (on-car 390): `--activityType N` types a task only when the task is CREATED. Passing it
+// to `am start` for an ALREADY LIVE task changes the windowing mode and nothing else. Re-typing a
+// live task therefore means removing it and letting the relaunch create it (see
+// [ensureTypedFreeform], the single owner of that rule).
+internal const val ACTIVITY_TYPE_RECENTS = 3
+internal const val ACTIVITY_TYPE_STANDARD = 1
 
 /** Live (windowingMode, displayId) of a task as reported by ATMS; null = unknown. */
 internal data class TaskModeState(val windowingMode: Int, val displayId: Int)
@@ -1093,6 +2416,30 @@ internal fun isFreeformUnsupported(t: Throwable): Boolean =
         }
 
 /**
+ * Extracted body of the TX_SET_TASK_WINDOWING_MODE handler (Q2-4 / anti-vacuity).
+ * All side-effecting dependencies are injected so the handler logic can be unit-tested
+ * independently of the binder dispatch machinery in main().
+ *
+ * Two callers send this TX: FULLSCREEN pull-back from ClusterProjectionManager, and FREEFORM
+ * gentle flip from SplitSessionManager.forceStopIfNeeded (preserves the app process so music
+ * keeps playing). display=0 is the correct target for both: fullscreen restores to the main
+ * display; freeform panels on DiLink run on display 0.
+ */
+internal fun handleSetWindowingModeTx(
+    taskId: Int,
+    mode: Int,
+    desiredActivityType: Int,
+    reflectSet: (Int, Int) -> Unit,
+    resolveComponent: () -> String?,
+    shell: (String, List<String>) -> String,
+    getActivityType: (Int) -> Int,
+    sleep: (Long) -> Unit,
+    stateOf: (Int) -> TaskModeState? = { _ -> null },
+) = setWindowingModeCompat(
+    taskId, mode, 0, desiredActivityType, reflectSet, resolveComponent, shell, getActivityType, stateOf, sleep,
+)
+
+/**
  * Windowing-mode switch that survives ROMs without the binder API. AOSP S removed
  * IActivityTaskManager.setTaskWindowingMode and DiLink 5 did not restore it (on-car
  * NoSuchMethodException, 2026-07-15), so after that specific throw the shell ActivityStarter
@@ -1101,39 +2448,83 @@ internal fun isFreeformUnsupported(t: Throwable): Boolean =
  * the only way back to fullscreen is removing the stack and relaunching on the main display
  * (the navigator restores its own guidance session; the task id changes). Any other [reflectSet]
  * throw is rethrown untouched so [launchFreeformCore]'s classification still sees it.
+ *
+ * Q2 / F-2+F-6: [getActivityType] is queried before attempting [reflectSet] in the freeform
+ * direction. [reflectSet] changes the windowing mode but preserves the activityType — so a task
+ * of the wrong type would stay that way. When [getActivityType] returns anything other than
+ * [desiredActivityType], [reflectSet] is skipped and the shell path is taken directly.
+ *
+ * The shell freeform path itself is [ensureTypedFreeform] — the single owner of the "a live
+ * freeform task must match its desired activityType" invariant, shared with
+ * [raiseFreeformTaskCore]; the type read here is handed to it. For the fullscreen direction the
+ * type check is irrelevant ([skipReflect] stays false) and that branch is untouched.
+ * Default [getActivityType] returns -1 (unknown) — the conservative path (skip reflectSet, plain
+ * relaunch). [stateOf] is handed to [ensureTypedFreeform] as well: it enables the non-destructive
+ * freeform probe that keeps a live task alive on firmwares without freeform.
+ * NOTE: omitting [getActivityType] silently disables the reflectSet fast path for the freeform
+ * direction, and omitting [stateOf] disables the probe. Every production call site must pass real
+ * implementations.
  */
 internal fun setWindowingModeCompat(
     taskId: Int,
     windowingMode: Int,
     freeformDisplayId: Int,
+    desiredActivityType: Int,
     reflectSet: (Int, Int) -> Unit,
     resolveComponent: () -> String?,
-    shell: (String) -> String,
+    shell: (String, List<String>) -> String,
+    getActivityType: (Int) -> Int = { _ -> -1 },
+    stateOf: (Int) -> TaskModeState? = { _ -> null },
     sleep: (Long) -> Unit,
 ) {
-    try {
-        reflectSet(taskId, windowingMode)
-        return
-    } catch (e: NoSuchMethodException) {
-        // fall through to the shell path
+    // Skip reflectSet when placing into freeform and the task's activityType is not the desired
+    // one. reflectSet changes windowingMode but preserves the existing activityType; the shell
+    // path recreates the task with the right type. Unknown type (-1) never matches — conservative.
+    val skipReflect: Boolean
+    var freeformType = -1
+    if (windowingMode == WINDOWING_MODE_FREEFORM) {
+        val type = getActivityType(taskId)
+        freeformType = type
+        val branch = when {
+            type == desiredActivityType -> "reflectSet (activityType matches desired=$desiredActivityType)"
+            type == -1                  -> "shell coerce (activityType unknown, reflection broken or task not found; desired=$desiredActivityType)"
+            else                        -> "shell coerce (activityType=$type, desired=$desiredActivityType)"
+        }
+        // Log.i, not Log.d: this branch decision is the only record of why a pane was re-typed
+        // (or not), and release dumps carry nothing below INFO.
+        android.util.Log.i("bydmate_helper", "setWindowingModeCompat task=$taskId mode=$windowingMode → $branch")
+        skipReflect = type != desiredActivityType
+    } else {
+        skipReflect = false
+    }
+    if (!skipReflect) {
+        try {
+            reflectSet(taskId, windowingMode)
+            return
+        } catch (e: NoSuchMethodException) {
+            // fall through to the shell path
+        }
     }
     val component = resolveComponent()
         ?: throw IllegalStateException("setWindowingModeCompat: no launcher component for task=$taskId")
     if (windowingMode == WINDOWING_MODE_FREEFORM) {
-        val out = shell("am start --windowingMode $WINDOWING_MODE_FREEFORM --display $freeformDisplayId -n $component")
-        if (out.contains("Error")) throw IllegalStateException("am start freeform failed: ${out.take(200)}")
+        // The typing invariant lives in one place for both freeform entry points.
+        ensureTypedFreeform(
+            taskId, freeformType, desiredActivityType, freeformDisplayId, component, shell, sleep, stateOf,
+        )
     } else {
         // A swallowed remove failure would let the relaunch deliver its intent to the
         // still-alive freeform task and report success with the task stranded on the
         // cluster (codex pre-release audit 2026-07-16). "Exception occurred while
         // executing" is the am wording for an in-process throw; a missing task prints
         // nothing and the relaunch then creates a fresh task — the correct outcome.
-        val removed = shell("am stack remove $taskId")
+        // taskId is an internal Int — safe to inline; no user/PM input involved.
+        val removed = shell("am stack remove $taskId", emptyList())
         if (removed.contains("Error") || removed.contains("Exception")) {
             throw IllegalStateException("am stack remove failed: ${removed.take(200)}")
         }
         sleep(500L)
-        val out = shell("am start --display 0 -n $component")
+        val out = shell("am start --display 0 -n \"\$1\"", listOf(component))
         if (out.contains("Error")) throw IllegalStateException("am start fullscreen failed: ${out.take(200)}")
     }
 }
@@ -1141,9 +2532,13 @@ internal fun setWindowingModeCompat(
 /**
  * Testable core of the direct freeform launch. Idempotent against a task stranded mid-way by a
  * quickboot kill: [state] reads the task's live windowing mode + display, so an already-freeform
- * task skips [setMode], a [setMode] throw is forgiven when the mode landed anyway (relaunch
- * race), and a [move] that throws "already there" is accepted when the task sits on the target
- * display. [setMode] gets ONE bounded retry after a settle pause — a transient vendor throw
+ * task of the [desiredActivityType] skips [setMode], a [setMode] throw is forgiven when the mode
+ * landed anyway (relaunch race), and a [move] that throws "already there" is accepted when the
+ * task sits on the target display. [getActivityType] guards that skip: a live task whose type
+ * differs from [desiredActivityType] goes through [setMode] (and thus [ensureTypedFreeform]) to be
+ * recreated with the right type, because the type is the caller's whole point — RECENTS for the
+ * cluster, STANDARD for split panes. Unknown type (-1) skips the check, as does the default
+ * [getActivityType]. [setMode] gets ONE bounded retry after a settle pause — a transient vendor throw
  * (e.g. racing the task's own relaunch) must not dump the launch into the VD fallback.
  * Availability probe: AOSP does NOT throw when freeform is off — Task.setWindowingMode silently
  * coerces the request to UNDEFINED — so the probe is the live state: no throw + state still not
@@ -1156,38 +2551,81 @@ internal fun setWindowingModeCompat(
  * (best-effort) so the task is not stranded as a tiny freeform window on its ORIGINAL display.
  * [bounds] and [focus] remain best-effort (mirroring launchAndForce), two passes with a settle
  * pause.
+ *
+ * Task identity: [setMode] may RECREATE the task instead of flipping it (a live task cannot be
+ * re-typed in place — see [ensureTypedFreeform]), which gives it a NEW id and leaves
+ * the incoming [taskId] pointing at a removed task. [resolveCurrentTaskId] is re-queried after
+ * every [setMode] attempt and its answer is the single source of truth for the rest of the run:
+ * state verification, the reparent, bounds, focus and the final confirmation all address the live
+ * task. Default: keep the incoming id (a caller that cannot re-resolve keeps the legacy
+ * behaviour); a resolver returning <= 0 (task momentarily invisible mid-relaunch) is ignored in
+ * favour of the last known id.
+ *
+ * Time budget: the mid-relaunch grace poll runs only while its sleep still fits before
+ * [deadlineMs] — the TX shares the client's 15s timeout with the launch retry loop, the shell
+ * setMode spawns and the failure-path fullscreen restore, and an unconditional extra 3s here can
+ * push the reply past it. What each poll does after the sleep (re-resolve, at most one re-pin,
+ * re-read) is bounded but not budgeted; it comes out of the slack [GRACE_DEADLINE_MS] leaves. [now] must be monotonic (see [monotonicMs]); a wall clock that jumps
+ * backwards mid-launch would stretch the poll past the client's budget. Default: no deadline
+ * (tests and callers that do not care).
  */
 internal fun launchFreeformCore(
     taskId: Int,
     displayId: Int,
     left: Int, top: Int, right: Int, bottom: Int,
+    desiredActivityType: Int,
     setMode: (Int, Int) -> Unit,
     move: (Int, Int) -> Unit,
     bounds: (Int, Int, Int, Int, Int) -> Unit,
     focus: (Int) -> Unit,
     state: (Int) -> TaskModeState? = { null },
+    getActivityType: (Int) -> Int = { -1 },
     log: (String, Throwable?) -> Unit = { _, _ -> },
+    resolveCurrentTaskId: () -> Int = { taskId },
+    deadlineMs: Long = Long.MAX_VALUE,
+    now: () -> Long = { monotonicMs() },
     sleep: (Long) -> Unit,
 ): Int {
     if (taskId <= 0) return FreeformResultCodes.FAILED
     if (left < 0 || top < 0 || right <= left || bottom <= top) return FreeformResultCodes.FAILED
+    // The one place that owns "which task id is current" (see KDoc).
+    var liveTaskId = taskId
+    fun refreshTaskId() {
+        val resolved = runCatching { resolveCurrentTaskId() }.getOrNull() ?: return
+        if (resolved > 0 && resolved != liveTaskId) {
+            log("task recreated by setMode: $liveTaskId -> $resolved; retargeting", null)
+            liveTaskId = resolved
+        }
+    }
+    // A task that is already freeform is only "ready" when it also carries the desired
+    // activityType: the retype happens inside [setMode], so accepting it on the windowing mode
+    // alone would leave a split pane STANDARD on the cluster, or a v3.9 RECENTS leftover
+    // un-migrated in a split (final review 2026-07-29). An unreadable type (-1) keeps the historic
+    // skip — no blind retype.
+    fun typeMatches(t: Int): Boolean {
+        val live = runCatching { getActivityType(t) }.getOrNull() ?: return true
+        return live == -1 || live == desiredActivityType
+    }
     // Phase 1: ensure the task is in freeform (idempotent, one bounded retry, state-verified).
-    var freeform = runCatching { state(taskId) }.getOrNull()?.windowingMode == WINDOWING_MODE_FREEFORM
+    var freeform = runCatching { state(liveTaskId) }.getOrNull()?.windowingMode == WINDOWING_MODE_FREEFORM &&
+        typeMatches(liveTaskId)
     var lastThrown: Throwable? = null
     var silentNoOp = false
     var attempt = 0
     while (!freeform && attempt < 2) {
         attempt++
         lastThrown = try {
-            setMode(taskId, WINDOWING_MODE_FREEFORM)
+            setMode(liveTaskId, WINDOWING_MODE_FREEFORM)
             null
         } catch (t: Throwable) {
             t
         }
-        lastThrown?.let { log("setTaskWindowingMode(task=$taskId, FREEFORM) attempt $attempt threw", it) }
-        val after = runCatching { state(taskId) }.getOrNull()
+        lastThrown?.let { log("setTaskWindowingMode(task=$liveTaskId, FREEFORM) attempt $attempt threw", it) }
+        // Before reading anything back: the task may now be a different one.
+        refreshTaskId()
+        val after = runCatching { state(liveTaskId) }.getOrNull()
         freeform = when {
-            after != null -> after.windowingMode == WINDOWING_MODE_FREEFORM
+            after != null -> after.windowingMode == WINDOWING_MODE_FREEFORM && typeMatches(liveTaskId)
             else -> lastThrown == null // state unknown: trust the call outcome (legacy behavior)
         }
         if (!freeform) {
@@ -1199,7 +2637,7 @@ internal fun launchFreeformCore(
         // The shell compat path applies mode AND display in one `am start`: when freeform is off
         // the mode is coerced away but the display move can still land — pull the task back to
         // the main display so it does not vanish onto the unwatched cluster (no-op for reflect).
-        runCatching { move(taskId, 0) }
+        runCatching { move(liveTaskId, 0) }
         return when {
             silentNoOp -> FreeformResultCodes.UNAVAILABLE // AOSP coerces silently when freeform is off
             isFreeformUnsupported(lastThrown!!) -> FreeformResultCodes.UNAVAILABLE
@@ -1208,24 +2646,54 @@ internal fun launchFreeformCore(
     }
     // Phase 2: reparent to the target display and pin (move is retried; bounds/focus best-effort).
     var movedByCall = false
+    fun pin(t: Int) {
+        if (runCatching { move(t, displayId) }.isSuccess) movedByCall = true
+        runCatching { bounds(t, left, top, right, bottom) }
+        runCatching { focus(t) }
+    }
     repeat(2) {
-        if (runCatching { move(taskId, displayId) }.isSuccess) movedByCall = true
-        runCatching { bounds(taskId, left, top, right, bottom) }
-        runCatching { focus(taskId) }
+        pin(liveTaskId)
         sleep(200L)
     }
-    val final = runCatching { state(taskId) }.getOrNull()
+    var pinnedTaskId = liveTaskId
+    // Mid-relaunch grace: the compat setMode applies mode AND target display in one `am start`,
+    // which RECREATES the task — it can still be absent from getTasks when the pin loop ends
+    // (Sea Lion 07 journals, issue #134). Treating that null as failure restored fullscreen and
+    // dropped the client to the VD fallback, killing a launch that was about to succeed. Re-resolve
+    // by package and re-read, up to 3s — but only within [deadlineMs]: everything before this point
+    // (launch retry loop, shell setMode spawns) already spent part of the client's 15s budget, and
+    // the poll's sleep must fit before the deadline, so an exhausted budget skips the poll entirely
+    // and falls straight through to the movedByCall trust path.
+    // A task that surfaces here under a NEW id was never pinned: the shell relaunch restores mode,
+    // type and display but not our bounds, and phase 2 addressed the id that is now gone — so pin
+    // the new id once, before reading the state that decides the verdict.
+    var final = runCatching { state(liveTaskId) }.getOrNull()
+    var graceAttempt = 0
+    while (final == null && graceAttempt < 6 && now() + GRACE_POLL_MS <= deadlineMs) {
+        graceAttempt++
+        sleep(GRACE_POLL_MS)
+        refreshTaskId()
+        if (liveTaskId != pinnedTaskId) {
+            log("re-pinning task $liveTaskId found mid-grace (was $pinnedTaskId)", null)
+            // The task phase 2 moved is gone: its success says nothing about this one, and the
+            // trust path below must not answer OK for a task whose own move failed.
+            movedByCall = false
+            pin(liveTaskId)
+            pinnedTaskId = liveTaskId
+        }
+        final = runCatching { state(liveTaskId) }.getOrNull()
+    }
     val placed = when {
         final != null -> final.displayId == displayId && final.windowingMode == WINDOWING_MODE_FREEFORM
         else -> movedByCall
     }
-    if (placed && !movedByCall) log("move(task=$taskId) threw but task already on display $displayId; accepting", null)
+    if (placed && !movedByCall) log("move(task=$liveTaskId) threw but task already on display $displayId; accepting", null)
     if (!placed) {
         // The task would be stranded as a tiny freeform window on the wrong display (or was
         // coerced back to fullscreen by the reparent). Restore fullscreen (best-effort) and
         // report FAILED so the client falls back to the VD pipeline.
         log("freeform placement not confirmed: final=$final movedByCall=$movedByCall; restoring fullscreen", null)
-        runCatching { setMode(taskId, WINDOWING_MODE_FULLSCREEN) }
+        runCatching { setMode(liveTaskId, WINDOWING_MODE_FULLSCREEN) }
         return FreeformResultCodes.FAILED
     }
     return FreeformResultCodes.OK
@@ -1234,24 +2702,50 @@ internal fun launchFreeformCore(
 /**
  * Direct freeform launch used by cluster projection: find-or-launch [packageName], switch its
  * task to freeform, move it to [displayId], apply the window bounds and focus it. Blocking
- * (launch retry loop) — binder threadpool thread; the app side uses a 15s timeout.
+ * (launch retry loop) — binder threadpool thread; the app side gives this TX 15s counted from the
+ * moment it holds the channel, which [GRACE_DEADLINE_MS] splits between the placement and the
+ * failure-path fullscreen restore.
  */
-private fun launchFreeform(packageName: String, displayId: Int, left: Int, top: Int, right: Int, bottom: Int): Int {
-    val taskId = resolveOrLaunchTask(packageName)
+private fun launchFreeform(
+    packageName: String,
+    displayId: Int,
+    left: Int, top: Int, right: Int, bottom: Int,
+    activityType: Int,
+): Int {
+    // The budget starts before the launch retry loop: it, not just the core, eats the client's 15s.
+    val startMs = monotonicMs()
+    val taskId = resolveOrLaunchTask(packageName, WINDOWING_MODE_FREEFORM, displayId, activityType)
     return launchFreeformCore(
-        taskId, displayId, left, top, right, bottom,
+        taskId, displayId, left, top, right, bottom, activityType,
         setMode = { t, m ->
             setWindowingModeCompat(
                 t, m, displayId,
-                ::setTaskWindowingModeReflect, { resolveLaunchComponent(packageName) }, ::execShell,
+                desiredActivityType = activityType,
+                reflectSet = ::setTaskWindowingModeReflect,
+                resolveComponent = { resolveLaunchComponent(packageName) },
+                shell = amShell,
+                // Q2 / F-2+F-6: read live activityType so a task of the wrong type (left by a
+                // prior fullscreen exit relaunch, or created by an older version) is recreated
+                // with the desired one via the shell path.
+                getActivityType = { ti -> taskActivityType(ti) },
+                // Same reader launchFreeformCore verifies with: it lets ensureTypedFreeform probe
+                // freeform on the live task instead of removing the navigator to find out.
+                stateOf = { ti -> taskModeState(ti) },
             ) { Thread.sleep(it) }
         },
         move = ::moveTaskToDisplayReflect,
         bounds = ::setTaskBoundsReflect,
         focus = ::setFocusedTaskReflect,
         state = ::taskModeState,
+        // Same live-type lookup the setMode lambda feeds to ensureTypedFreeform: an already
+        // freeform task of the wrong type must not skip the retype.
+        getActivityType = { ti -> taskActivityType(ti) },
         // android.util.Log reaches logcat from the app_process daemon; System.err goes nowhere.
         // Passing the throwable prints the full stack trace including the cause chain.
         log = { msg, t -> android.util.Log.w("bydmate_helper", msg, t) },
+        // setMode recreates a STANDARD task (new id) — re-resolve by package, never by the old id.
+        resolveCurrentTaskId = { findTaskState(packageName)?.taskId ?: -1 },
+        deadlineMs = startMs + GRACE_DEADLINE_MS,
+        now = { monotonicMs() },
     ) { Thread.sleep(it) }
 }

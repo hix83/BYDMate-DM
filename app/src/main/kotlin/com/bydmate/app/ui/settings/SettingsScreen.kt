@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
+import android.widget.Toast
+import com.bydmate.app.camera.BlindSpotPositionOverlay
+import com.bydmate.app.camera.BlindSpotPreferences
 import com.bydmate.app.cluster.ClusterEntryPoint
 import com.bydmate.app.cluster.ClusterProjectionManager
 import com.bydmate.app.cluster.CENTER_OFFSET_PCT
@@ -17,6 +20,7 @@ import com.bydmate.app.cluster.DEFAULT_SCALE_PCT
 import com.bydmate.app.cluster.NAVI_PACKAGE
 import dagger.hilt.android.EntryPointAccessors
 import kotlin.math.roundToInt
+import com.bydmate.app.ui.widget.LeftTapMode
 import com.bydmate.app.ui.widget.WidgetController
 import com.bydmate.app.ui.widget.WidgetPreferences
 import androidx.compose.foundation.background
@@ -123,9 +127,11 @@ import kotlinx.coroutines.flow.filterNotNull
 import com.bydmate.app.R
 import com.bydmate.app.data.parking.ParkingCamera
 import com.bydmate.app.data.parking.ParkingCameraConfig
+import com.bydmate.app.agent.LlmAgentBackend
 import com.bydmate.app.data.remote.OpenRouterModel
 import com.bydmate.app.data.repository.SettingsRepository
 import com.bydmate.app.ui.components.AppLaunchPickerDialog
+import com.bydmate.app.ui.components.MultiAppPickerDialog
 import com.bydmate.app.ui.components.bydSwitchColors
 import com.bydmate.app.ui.theme.*
 import android.Manifest
@@ -138,6 +144,10 @@ import com.bydmate.app.voice.TtsGender
 import com.bydmate.app.voice.TtsVoiceCatalog
 import com.bydmate.app.voice.online.TtsRouter
 import com.bydmate.app.hud.HudController
+import com.bydmate.app.split.Split37Engine
+import com.bydmate.app.split.SplitFreeformVerdict
+import com.bydmate.app.split.SplitRole
+import com.bydmate.app.split.applyPick
 import java.util.Locale
 
 private enum class SettingsSection(@StringRes val labelRes: Int, val icon: ImageVector) {
@@ -145,6 +155,7 @@ private enum class SettingsSection(@StringRes val labelRes: Int, val icon: Image
     WIDGET(R.string.settings_section_widget_title, Icons.Outlined.PhoneAndroid),
     PARKING_CAMERA(R.string.settings_section_parking_camera_title, Icons.Outlined.PhotoCamera),
     DISPLAY(R.string.settings_section_display_title, Icons.Outlined.DirectionsCar),
+    SPLIT(R.string.settings_section_split_title, Icons.Outlined.Apps),
     BATTERY(R.string.settings_section_auto_battery_title, Icons.Outlined.BatteryChargingFull),
     PLACES(R.string.settings_section_places_title, Icons.Outlined.Place),
     INTEGRATIONS(R.string.settings_section_integrations_title, Icons.Outlined.Link),
@@ -191,6 +202,16 @@ fun SettingsScreen(
                 }
             },
             containerColor = CardSurface
+        )
+    }
+
+    // Manual range calculation table dialog
+    if (state.showManualRangeTableDialog) {
+        ManualRangeTableDialog(
+            currentTable = state.manualRangeTable,
+            onDismiss = { viewModel.hideManualRangeTableDialog() },
+            onSave = { viewModel.saveManualRangeTable(it) },
+            onReset = { viewModel.resetManualRangeTable() },
         )
     }
 
@@ -277,6 +298,7 @@ fun SettingsScreen(
                         SettingsSection.WIDGET -> WidgetSection()
                         SettingsSection.PARKING_CAMERA -> ParkingCameraSection(state, viewModel)
                         SettingsSection.DISPLAY -> DisplaySection()
+                        SettingsSection.SPLIT -> SplitSection()
                         SettingsSection.PLACES -> PlacesSection()
                         SettingsSection.SERVICE -> ServiceSection(state, viewModel)
                         SettingsSection.APP -> AppSection(state, viewModel)
@@ -526,6 +548,42 @@ private fun BatterySection(state: SettingsUiState, viewModel: SettingsViewModel)
             SettingHint(stringResource(R.string.settings_consumption_bad_desc))
         }
     }
+
+    SectionHeader(text = stringResource(R.string.settings_range_calc_section_header))
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SettingChipRow(
+                title = stringResource(R.string.settings_range_calc_method_label),
+                description = stringResource(R.string.settings_range_calc_method_desc),
+                options = listOf(
+                    stringResource(R.string.settings_range_calc_auto),
+                    stringResource(R.string.settings_range_calc_manual),
+                ),
+                selectedIndex = if (state.rangeCalcMethod == SettingsRepository.RANGE_CALC_MANUAL) 1 else 0,
+                onSelect = { idx ->
+                    viewModel.saveRangeCalcMethod(
+                        if (idx == 1) SettingsRepository.RANGE_CALC_MANUAL else SettingsRepository.RANGE_CALC_AUTO
+                    )
+                },
+            )
+            if (state.rangeCalcMethod == SettingsRepository.RANGE_CALC_MANUAL) {
+                SettingDivider()
+                SettingActionRow(
+                    title = stringResource(R.string.settings_range_calc_edit_table_button),
+                    description = stringResource(R.string.settings_range_calc_edit_table_desc),
+                    buttonLabel = stringResource(R.string.settings_range_calc_edit_table_button),
+                    onClick = { viewModel.showManualRangeTableDialog() },
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -623,6 +681,53 @@ private fun IntegrationsSection(state: SettingsUiState, viewModel: SettingsViewM
                 style = SettingButtonStyle.Primary,
             )
             state.abrpSaveStatus?.let {
+                Text(it, color = AccentGreen, fontSize = 12.sp)
+            }
+        }
+    }
+
+    SectionHeader(text = stringResource(R.string.settings_webhook_section_header))
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SettingToggleRow(
+                title = stringResource(R.string.settings_webhook_label),
+                description = stringResource(R.string.settings_webhook_description),
+                checked = state.webhookEnabled,
+                onCheckedChange = { viewModel.toggleWebhook(it) },
+            )
+            SettingsTextField(
+                label = stringResource(R.string.settings_webhook_url_label),
+                value = state.webhookUrl,
+                onValueChange = { viewModel.updateWebhookUrl(it) },
+                keyboardType = KeyboardType.Uri,
+            )
+            SettingsTextField(
+                label = stringResource(R.string.settings_webhook_secret_label),
+                value = state.webhookSecret,
+                onValueChange = { viewModel.updateWebhookSecret(it) },
+                keyboardType = KeyboardType.Password,
+                secret = true
+            )
+            SettingToggleRow(
+                title = stringResource(R.string.settings_webhook_location_label),
+                description = stringResource(R.string.settings_webhook_location_description),
+                checked = state.webhookSendLocation,
+                onCheckedChange = { viewModel.toggleWebhookSendLocation(it) },
+            )
+            SettingActionRow(
+                title = stringResource(R.string.settings_webhook_save_button),
+                buttonLabel = stringResource(R.string.settings_webhook_save_button),
+                onClick = { viewModel.saveWebhookSettings() },
+                style = SettingButtonStyle.Primary,
+            )
+            state.webhookSaveStatus?.let {
                 Text(it, color = AccentGreen, fontSize = 12.sp)
             }
         }
@@ -728,6 +833,22 @@ private fun IntegrationsSection(state: SettingsUiState, viewModel: SettingsViewM
         )
         state.customModelsError?.let {
             Text(it, color = SocRed, fontSize = 12.sp, lineHeight = 16.sp)
+        }
+        SettingsTextField(
+            label = stringResource(R.string.settings_custom_extra_json_label),
+            value = state.customExtraJson,
+            onValueChange = { viewModel.saveCustomExtraJson(it) },
+            keyboardType = KeyboardType.Text,
+            singleLine = false
+        )
+        SettingHint(stringResource(R.string.settings_custom_extra_json_hint))
+        if (state.customExtraJson.isNotBlank() &&
+            LlmAgentBackend.parseExtraJson(state.customExtraJson) == null
+        ) {
+            Text(
+                stringResource(R.string.settings_custom_extra_json_invalid),
+                color = SocRed, fontSize = 12.sp, lineHeight = 16.sp
+            )
         }
     }
 
@@ -958,6 +1079,11 @@ private fun WidgetSection() {
     val context = LocalContext.current
     val prefs = remember { WidgetPreferences(context) }
     val enabled by prefs.enabledFlow().collectAsStateWithLifecycle(initialValue = prefs.isEnabled())
+    // Read split feature state once at composition time to gate the left-tap mode chip.
+    val splitFeatureEnabled = remember {
+        EntryPointAccessors.fromApplication(context.applicationContext, ClusterEntryPoint::class.java)
+            .splitPreferences().isFeatureEnabled()
+    }
     val alpha by prefs.alphaFlow().collectAsStateWithLifecycle(initialValue = prefs.getAlpha())
     val scale by prefs.scaleFlow().collectAsStateWithLifecycle(initialValue = prefs.getScale())
     val leftTapApp by prefs.leftTapAppFlow().collectAsStateWithLifecycle(
@@ -973,7 +1099,10 @@ private fun WidgetSection() {
     )
     val hideOnYoutube by prefs.hideOnYoutubeFlow()
         .collectAsStateWithLifecycle(initialValue = prefs.isHideOnYoutube())
+    val hideInApps by prefs.hideInAppsFlow()
+        .collectAsStateWithLifecycle(initialValue = prefs.getHideInApps())
     var showLeftTapPicker by remember { mutableStateOf(false) }
+    var showHideInAppsPicker by remember { mutableStateOf(false) }
 
     SectionHeader(text = stringResource(R.string.settings_widget_section_header))
     Card(
@@ -1013,6 +1142,16 @@ private fun WidgetSection() {
                 description = stringResource(R.string.settings_widget_hide_youtube_description),
                 checked = hideOnYoutube,
                 onCheckedChange = { prefs.setHideOnYoutube(it) },
+            )
+            SettingValueRow(
+                title = stringResource(R.string.settings_widget_hide_apps_label),
+                description = stringResource(R.string.settings_widget_hide_apps_description),
+                value = if (hideInApps.isEmpty()) {
+                    stringResource(R.string.settings_widget_hide_apps_none)
+                } else {
+                    stringResource(R.string.settings_widget_hide_apps_count, hideInApps.size)
+                },
+                onClick = { showHideInAppsPicker = true },
             )
             SettingSliderRow(
                 title = stringResource(R.string.settings_widget_opacity_label),
@@ -1070,6 +1209,21 @@ private fun WidgetSection() {
                 onCheckedChange = { prefs.setLeftTapZoningEnabled(it) },
                 enabled = enabled,
             )
+            if (leftTapApp.enabled) {
+                SettingChipRow(
+                    title = stringResource(R.string.settings_widget_left_tap_mode_label),
+                    options = listOf(
+                        stringResource(R.string.settings_widget_left_tap_mode_app),
+                        stringResource(R.string.settings_widget_left_tap_mode_split),
+                    ),
+                    selectedIndex = if (leftTapApp.mode == LeftTapMode.APP) 0 else 1,
+                    onSelect = { idx ->
+                        prefs.setLeftTapMode(if (idx == 0) LeftTapMode.APP else LeftTapMode.SPLIT)
+                    },
+                    // Disabled when split feature is off: prevents selecting split mode (Fix 1).
+                    enabled = enabled && splitFeatureEnabled,
+                )
+            }
             SettingToggleRow(
                 title = stringResource(R.string.settings_widget_buttons_label),
                 description = stringResource(R.string.settings_widget_buttons_description),
@@ -1105,7 +1259,8 @@ private fun WidgetSection() {
                     leftTapApp.label
                 },
                 onClick = { showLeftTapPicker = true },
-                enabled = leftTapApp.enabled && enabled && leftTapApp.action == WidgetPreferences.LEFT_TAP_ACTION_APP,
+                enabled = leftTapApp.enabled && leftTapApp.mode == LeftTapMode.APP && enabled &&
+                    leftTapApp.action == WidgetPreferences.LEFT_TAP_ACTION_APP,
             )
         }
     }
@@ -1119,6 +1274,18 @@ private fun WidgetSection() {
                 showLeftTapPicker = false
             },
             showMinimizeToggle = false,
+        )
+    }
+
+    if (showHideInAppsPicker) {
+        MultiAppPickerDialog(
+            title = stringResource(R.string.settings_widget_hide_apps_label),
+            selectedPackages = hideInApps,
+            onDismiss = { showHideInAppsPicker = false },
+            onConfirm = { picked ->
+                prefs.setHideInApps(picked)
+                showHideInAppsPicker = false
+            },
         )
     }
 }
@@ -1176,127 +1343,225 @@ private fun DisplaySection() {
     var rebootPending by remember {
         mutableStateOf(prefs.getBoolean(ClusterProjectionManager.KEY_FREEFORM_REBOOT_PENDING, false))
     }
+    // Latched by the projection runtime, never from this screen, so a read on entering composition
+    // is enough. bootCount is only consulted by noteUnavailable(), hence the stub.
+    val freeformUnsupported = remember {
+        SplitFreeformVerdict(prefs, bootCount = { -1 }).unsupported()
+    }
     var directProjection by remember {
         mutableStateOf(ClusterProjectionManager.isDirectProjectionEnabled(context))
     }
     var extendedConfirmOpen by remember { mutableStateOf(false) }
     var modeHelpOpen by remember { mutableStateOf(false) }
 
-    SectionHeader(text = stringResource(R.string.settings_display_mirror_header))
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
-        modifier = Modifier.fillMaxWidth(),
+    // Persist the new size and re-apply it live. reproject() is a no-op unless we are actively
+    // projecting, so a tweak while OFF just lands in prefs and shows on the next star press.
+    val applyGeometry: () -> Unit = {
+        prefs.edit()
+            .putInt(ClusterProjectionManager.KEY_WIDTH_PCT, widthPct)
+            .putInt(ClusterProjectionManager.KEY_HEIGHT_PCT, heightPct)
+            .putInt(ClusterProjectionManager.KEY_OFFSET_X_PCT, offsetXPct)
+            .putInt(ClusterProjectionManager.KEY_OFFSET_Y_PCT, offsetYPct)
+            .putInt(ClusterProjectionManager.KEY_SCALE_PCT, scalePct)
+            .apply()
+        ClusterProjectionManager.reproject(
+            context, entryPoint.helperClient(), entryPoint.helperBootstrap())
+    }
+
+    SectionHeader(text = stringResource(R.string.settings_section_display_title))
+    SettingCollapsibleCard(
+        title = stringResource(R.string.settings_display_card_mirror_title),
+        subtitle = if (enabled) {
+            stringResource(
+                R.string.settings_display_card_mirror_sub_app,
+                stringResource(R.string.settings_display_state_on),
+                targetLabel,
+            )
+        } else {
+            stringResource(
+                R.string.settings_display_card_mirror_sub,
+                stringResource(R.string.settings_display_state_off),
+            )
+        },
+        checked = enabled,
+        onCheckedChange = {
+            enabled = it
+            prefs.edit().putBoolean(ClusterProjectionManager.KEY_MIRROR_ENABLED, it).apply()
+            // Turning the switch on self-enables our a11y key filter via the daemon, so star
+            // control works on a clean install with no ADB (DiLink has no a11y settings UI).
+            if (it) {
+                ClusterProjectionManager.enableStarControl(
+                    entryPoint.helperClient(), entryPoint.helperBootstrap())
+            }
+        },
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingToggleRow(
-                title = stringResource(R.string.settings_display_mirror_title),
-                description = stringResource(R.string.settings_display_mirror_desc),
-                checked = enabled,
-                onCheckedChange = {
-                    enabled = it
-                    prefs.edit().putBoolean(ClusterProjectionManager.KEY_MIRROR_ENABLED, it).apply()
-                    // Turning the switch on self-enables our a11y key filter via the daemon, so star
-                    // control works on a clean install with no ADB (DiLink has no a11y settings UI).
-                    if (it) {
-                        ClusterProjectionManager.enableStarControl(
-                            entryPoint.helperClient(), entryPoint.helperBootstrap())
+        // Auto power-on toggle: when enabled, ClusterProjectionManager wakes the cluster compositor
+        // before sending the projection window.
+        SettingToggleRow(
+            title = stringResource(R.string.settings_cluster_auto_container_title),
+            description = stringResource(R.string.settings_cluster_auto_container_desc),
+            checked = autoContainer,
+            onCheckedChange = {
+                autoContainer = it
+                prefs.edit().putBoolean(ClusterProjectionManager.KEY_AUTO_CONTAINER, it).apply()
+            },
+        )
+        SettingDivider()
+        // Transport selector: direct freeform (agent/HUD can see the navigator) vs the
+        // pre-3.6 VirtualDisplay pipeline. VD also returns the system freeform flag to its
+        // factory value — the fix for third-party projection apps broken by a stale flag.
+        SettingChipRow(
+            title = stringResource(R.string.settings_projection_mode_title),
+            options = listOf(
+                stringResource(R.string.settings_projection_mode_vd),
+                stringResource(R.string.settings_projection_mode_direct),
+            ),
+            selectedIndex = if (directProjection) 1 else 0,
+            onSelect = { index ->
+                val direct = index == 1
+                if (direct != directProjection) {
+                    if (direct) {
+                        // Extended transport changes a system window setting - informed
+                        // consent first: what changes, why, and how to restore factory.
+                        extendedConfirmOpen = true
+                    } else {
+                        directProjection = false
+                        rebootPending = false
+                        ClusterProjectionManager.setDirectProjectionEnabled(
+                            context, false, entryPoint.helperClient(), entryPoint.helperBootstrap())
+                    }
+                }
+            },
+            onHelp = { modeHelpOpen = !modeHelpOpen },
+        )
+        if (modeHelpOpen) {
+            SettingHint(text = stringResource(R.string.settings_projection_mode_help))
+        }
+        if (extendedConfirmOpen) {
+            AlertDialog(
+                onDismissRequest = { extendedConfirmOpen = false },
+                containerColor = CardSurface,
+                title = {
+                    Text(
+                        stringResource(R.string.projection_extended_confirm_title),
+                        color = TextPrimary,
+                    )
+                },
+                text = {
+                    Text(
+                        stringResource(R.string.projection_extended_confirm_body),
+                        color = TextSecondary, fontSize = 14.sp, lineHeight = 19.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        extendedConfirmOpen = false
+                        directProjection = true
+                        ClusterProjectionManager.setDirectProjectionEnabled(
+                            context, true, entryPoint.helperClient(), entryPoint.helperBootstrap())
+                    }) { Text(stringResource(R.string.projection_extended_confirm_enable), color = AccentGreen) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { extendedConfirmOpen = false }) {
+                        Text(stringResource(R.string.projection_extended_confirm_cancel), color = TextSecondary)
                     }
                 },
             )
+        }
+        // Once the firmware is proven to ignore the freeform flag (#139) the reboot advice is
+        // wrong — say so instead.
+        if (directProjection && (freeformUnsupported || rebootPending)) {
+            SettingHint(text = stringResource(
+                if (freeformUnsupported) R.string.cluster_direct_unsupported_hint
+                else R.string.settings_cluster_direct_reboot_hint
+            ))
+        }
+        // Trigger-button row — only meaningful while the feature (and thus the a11y service) is on.
+        if (enabled) {
             SettingDivider()
-            // Auto power-on toggle: when enabled, ClusterProjectionManager wakes the cluster compositor
-            // before sending the projection window.
-            SettingToggleRow(
-                title = stringResource(R.string.settings_cluster_auto_container_title),
-                description = stringResource(R.string.settings_cluster_auto_container_desc),
-                checked = autoContainer,
-                onCheckedChange = {
-                    autoContainer = it
-                    prefs.edit().putBoolean(ClusterProjectionManager.KEY_AUTO_CONTAINER, it).apply()
-                },
-            )
-            SettingDivider()
-            // Transport selector: direct freeform (agent/HUD can see the navigator) vs the
-            // pre-3.6 VirtualDisplay pipeline. VD also returns the system freeform flag to its
-            // factory value — the fix for third-party projection apps broken by a stale flag.
-            SettingChipRow(
-                title = stringResource(R.string.settings_projection_mode_title),
-                options = listOf(
-                    stringResource(R.string.settings_projection_mode_vd),
-                    stringResource(R.string.settings_projection_mode_direct),
-                ),
-                selectedIndex = if (directProjection) 1 else 0,
-                onSelect = { index ->
-                    val direct = index == 1
-                    if (direct != directProjection) {
-                        if (direct) {
-                            // Extended transport changes a system window setting - informed
-                            // consent first: what changes, why, and how to restore factory.
-                            extendedConfirmOpen = true
-                        } else {
-                            directProjection = false
-                            rebootPending = false
-                            ClusterProjectionManager.setDirectProjectionEnabled(
-                                context, false, entryPoint.helperClient(), entryPoint.helperBootstrap())
-                        }
-                    }
-                },
-                onHelp = { modeHelpOpen = !modeHelpOpen },
-            )
-            if (modeHelpOpen) {
-                SettingHint(text = stringResource(R.string.settings_projection_mode_help))
-            }
-            if (extendedConfirmOpen) {
-                AlertDialog(
-                    onDismissRequest = { extendedConfirmOpen = false },
-                    containerColor = CardSurface,
-                    title = {
-                        Text(
-                            stringResource(R.string.projection_extended_confirm_title),
-                            color = TextPrimary,
-                        )
-                    },
-                    text = {
-                        Text(
-                            stringResource(R.string.projection_extended_confirm_body),
-                            color = TextSecondary, fontSize = 14.sp, lineHeight = 19.sp,
-                        )
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            extendedConfirmOpen = false
-                            directProjection = true
-                            ClusterProjectionManager.setDirectProjectionEnabled(
-                                context, true, entryPoint.helperClient(), entryPoint.helperBootstrap())
-                        }) { Text(stringResource(R.string.projection_extended_confirm_enable), color = AccentGreen) }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { extendedConfirmOpen = false }) {
-                            Text(stringResource(R.string.projection_extended_confirm_cancel), color = TextSecondary)
-                        }
-                    },
-                )
-            }
-            if (rebootPending && directProjection) {
-                SettingHint(text = stringResource(R.string.settings_cluster_direct_reboot_hint))
-            }
-            // Trigger-button row — only meaningful while the feature (and thus the a11y service) is on.
-            if (enabled) {
-                SettingDivider()
-                SettingValueRow(
-                    title = stringResource(R.string.settings_display_button_title),
-                    value = steeringButtonLabel(triggerKey),
-                    onClick = { learning = true },
-                )
-            }
-            SettingDivider()
-            // App to project — defaults to Yandex Navi. Takes effect on the next star press, not live.
             SettingValueRow(
-                title = stringResource(R.string.settings_display_app_title),
-                value = targetLabel,
-                onClick = { pickingApp = true },
+                title = stringResource(R.string.settings_display_button_title),
+                value = steeringButtonLabel(triggerKey),
+                onClick = { learning = true },
             )
+        }
+        SettingDivider()
+        // App to project — defaults to Yandex Navi. Takes effect on the next star press, not live.
+        SettingValueRow(
+            title = stringResource(R.string.settings_display_app_title),
+            value = targetLabel,
+            onClick = { pickingApp = true },
+        )
+        // Defaults (100/100 size, centered, scale 100) reproduce the plain fullscreen projection, so
+        // cars without a native mini zone (e.g. Leopard 3) need no tuning. The offset sliders only
+        // matter once the window is smaller than the panel; on Sea Lion 07 they let the user move the
+        // window into the native mini-cluster zone (#48).
+        SettingSubhead(text = stringResource(R.string.settings_display_window_subhead))
+        SettingSliderRow(
+            title = stringResource(R.string.settings_display_size_width),
+            description = stringResource(R.string.settings_display_size_width_desc),
+            value = widthPct.toFloat(),
+            onValueChange = { widthPct = it.roundToInt() },
+            valueRange = MIN_PROJECTION_PCT.toFloat()..MAX_PROJECTION_PCT.toFloat(),
+            valueLabel = "${widthPct}%",
+            steps = (MAX_PROJECTION_PCT - MIN_PROJECTION_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = applyGeometry,
+        )
+        SettingDivider()
+        SettingSliderRow(
+            title = stringResource(R.string.settings_display_size_height),
+            description = stringResource(R.string.settings_display_size_height_desc),
+            value = heightPct.toFloat(),
+            onValueChange = { heightPct = it.roundToInt() },
+            valueRange = MIN_PROJECTION_PCT.toFloat()..MAX_PROJECTION_PCT.toFloat(),
+            valueLabel = "${heightPct}%",
+            steps = (MAX_PROJECTION_PCT - MIN_PROJECTION_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = applyGeometry,
+        )
+        SettingDivider()
+        SettingSliderRow(
+            title = stringResource(R.string.settings_display_offset_x),
+            description = stringResource(R.string.settings_display_offset_x_desc),
+            value = offsetXPct.toFloat(),
+            onValueChange = { offsetXPct = it.roundToInt() },
+            valueRange = MIN_OFFSET_PCT.toFloat()..MAX_OFFSET_PCT.toFloat(),
+            valueLabel = "${offsetXPct}%",
+            steps = (MAX_OFFSET_PCT - MIN_OFFSET_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = applyGeometry,
+        )
+        SettingDivider()
+        SettingSliderRow(
+            title = stringResource(R.string.settings_display_offset_y),
+            description = stringResource(R.string.settings_display_offset_y_desc),
+            value = offsetYPct.toFloat(),
+            onValueChange = { offsetYPct = it.roundToInt() },
+            valueRange = MIN_OFFSET_PCT.toFloat()..MAX_OFFSET_PCT.toFloat(),
+            valueLabel = "${offsetYPct}%",
+            steps = (MAX_OFFSET_PCT - MIN_OFFSET_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = applyGeometry,
+        )
+        SettingDivider()
+        SettingSliderRow(
+            title = stringResource(R.string.settings_display_scale),
+            description = stringResource(R.string.settings_display_scale_desc),
+            value = scalePct.toFloat(),
+            onValueChange = { scalePct = it.roundToInt() },
+            valueRange = MIN_SCALE_PCT.toFloat()..MAX_SCALE_PCT.toFloat(),
+            valueLabel = "${scalePct}%",
+            steps = (MAX_SCALE_PCT - MIN_SCALE_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = applyGeometry,
+        )
+        // #121: only the VD transport can scale (it sizes the render buffer). Direct mode would
+        // need a density override on the live cluster display, which kills Qt apps like 2GIS, so
+        // the slider is inert there. Kept enabled and visible - the value still applies the moment
+        // the user switches back to Factory.
+        if (directProjection) {
+            SettingHint(text = stringResource(R.string.settings_display_scale_direct_hint))
         }
     }
 
@@ -1307,46 +1572,43 @@ private fun DisplaySection() {
     var hudSpeedSign by remember { mutableStateOf(hudController.isSpeedSignEnabled()) }
     val hudStatus by hudController.status.collectAsState()
 
-    SectionHeader(text = stringResource(R.string.settings_hud_header))
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
-        modifier = Modifier.fillMaxWidth(),
+    SettingCollapsibleCard(
+        title = stringResource(R.string.settings_display_card_hud_title),
+        subtitle = stringResource(
+            R.string.settings_display_card_hud_sub,
+            stringResource(
+                if (hudEnabled) R.string.settings_display_state_on
+                else R.string.settings_display_state_off
+            ),
+        ),
+        checked = hudEnabled,
+        onCheckedChange = {
+            hudEnabled = it
+            hudController.setEnabled(it)
+        },
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (hudEnabled) {
             SettingToggleRow(
-                title = stringResource(R.string.settings_hud_title),
-                description = stringResource(R.string.settings_hud_desc),
-                checked = hudEnabled,
+                title = stringResource(R.string.settings_hud_speed_sign_title),
+                description = stringResource(R.string.settings_hud_speed_sign_desc),
+                checked = hudSpeedSign,
                 onCheckedChange = {
-                    hudEnabled = it
-                    hudController.setEnabled(it)
+                    hudSpeedSign = it
+                    hudController.setSpeedSignEnabled(it)
                 },
             )
-            if (hudEnabled) {
-                SettingDivider()
-                SettingToggleRow(
-                    title = stringResource(R.string.settings_hud_speed_sign_title),
-                    description = stringResource(R.string.settings_hud_speed_sign_desc),
-                    checked = hudSpeedSign,
-                    onCheckedChange = {
-                        hudSpeedSign = it
-                        hudController.setSpeedSignEnabled(it)
-                    },
-                )
-                SettingDivider()
-                SettingStatusRow(
-                    title = when (hudStatus) {
-                        HudController.Status.ON -> stringResource(R.string.settings_hud_status_on)
-                        HudController.Status.UNSUPPORTED -> stringResource(R.string.settings_hud_status_unsupported)
-                        HudController.Status.BIND_FAILED -> stringResource(R.string.settings_hud_status_bind_failed)
-                        else -> stringResource(R.string.settings_hud_status_connecting)
-                    },
-                    ok = hudStatus == HudController.Status.ON,
-                )
-            }
-            SettingHint(text = stringResource(R.string.settings_hud_hint))
+            SettingDivider()
+            SettingStatusRow(
+                title = when (hudStatus) {
+                    HudController.Status.ON -> stringResource(R.string.settings_hud_status_on)
+                    HudController.Status.UNSUPPORTED -> stringResource(R.string.settings_hud_status_unsupported)
+                    HudController.Status.BIND_FAILED -> stringResource(R.string.settings_hud_status_bind_failed)
+                    else -> stringResource(R.string.settings_hud_status_connecting)
+                },
+                ok = hudStatus == HudController.Status.ON,
+            )
         }
+        SettingHint(text = stringResource(R.string.settings_hud_hint))
     }
 
     if (learning) {
@@ -1376,90 +1638,150 @@ private fun DisplaySection() {
         )
     }
 
-    SectionHeader(text = stringResource(R.string.settings_display_size_header))
-    // Persist the new size and re-apply it live. reproject() is a no-op unless we are actively
-    // projecting, so a tweak while OFF just lands in prefs and shows on the next star press.
-    val applyGeometry: () -> Unit = {
-        prefs.edit()
-            .putInt(ClusterProjectionManager.KEY_WIDTH_PCT, widthPct)
-            .putInt(ClusterProjectionManager.KEY_HEIGHT_PCT, heightPct)
-            .putInt(ClusterProjectionManager.KEY_OFFSET_X_PCT, offsetXPct)
-            .putInt(ClusterProjectionManager.KEY_OFFSET_Y_PCT, offsetYPct)
-            .putInt(ClusterProjectionManager.KEY_SCALE_PCT, scalePct)
-            .apply()
-        ClusterProjectionManager.reproject(
-            context, entryPoint.helperClient(), entryPoint.helperBootstrap())
+    BlindSpotCard()
+}
+
+/**
+ * «Слепые зоны»: turn signal → blind-spot camera. Reads and writes the feature's own
+ * SharedPreferences file directly, like the projection cards above; BlindSpotController
+ * re-reads it on every tick, so a change lands without a restart. Turning the switch on asks
+ * for CAMERA — the AVM stack refuses to open the preview without it (as on the probe screen).
+ */
+@Composable
+private fun BlindSpotCard() {
+    val context = LocalContext.current
+    val prefs = remember {
+        context.getSharedPreferences(BlindSpotPreferences.PREFS_NAME, Context.MODE_PRIVATE)
     }
-    // Defaults (100/100 size, centered, scale 100) reproduce the plain fullscreen projection, so
-    // cars without a native mini zone (e.g. Leopard 3) need no tuning. The offset sliders only
-    // matter once the window is smaller than the panel; on Sea Lion 07 they let the user move the
-    // window into the native mini-cluster zone (#48).
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SettingSliderRow(
-                title = stringResource(R.string.settings_display_size_width),
-                description = stringResource(R.string.settings_display_size_width_desc),
-                value = widthPct.toFloat(),
-                onValueChange = { widthPct = it.roundToInt() },
-                valueRange = MIN_PROJECTION_PCT.toFloat()..MAX_PROJECTION_PCT.toFloat(),
-                valueLabel = "${widthPct}%",
-                steps = (MAX_PROJECTION_PCT - MIN_PROJECTION_PCT) / 2 - 1,
-                enabled = enabled,
-                onValueChangeFinished = applyGeometry,
-            )
-            SettingDivider()
-            SettingSliderRow(
-                title = stringResource(R.string.settings_display_size_height),
-                description = stringResource(R.string.settings_display_size_height_desc),
-                value = heightPct.toFloat(),
-                onValueChange = { heightPct = it.roundToInt() },
-                valueRange = MIN_PROJECTION_PCT.toFloat()..MAX_PROJECTION_PCT.toFloat(),
-                valueLabel = "${heightPct}%",
-                steps = (MAX_PROJECTION_PCT - MIN_PROJECTION_PCT) / 2 - 1,
-                enabled = enabled,
-                onValueChangeFinished = applyGeometry,
-            )
-            SettingDivider()
-            SettingSliderRow(
-                title = stringResource(R.string.settings_display_offset_x),
-                description = stringResource(R.string.settings_display_offset_x_desc),
-                value = offsetXPct.toFloat(),
-                onValueChange = { offsetXPct = it.roundToInt() },
-                valueRange = MIN_OFFSET_PCT.toFloat()..MAX_OFFSET_PCT.toFloat(),
-                valueLabel = "${offsetXPct}%",
-                steps = (MAX_OFFSET_PCT - MIN_OFFSET_PCT) / 2 - 1,
-                enabled = enabled,
-                onValueChangeFinished = applyGeometry,
-            )
-            SettingDivider()
-            SettingSliderRow(
-                title = stringResource(R.string.settings_display_offset_y),
-                description = stringResource(R.string.settings_display_offset_y_desc),
-                value = offsetYPct.toFloat(),
-                onValueChange = { offsetYPct = it.roundToInt() },
-                valueRange = MIN_OFFSET_PCT.toFloat()..MAX_OFFSET_PCT.toFloat(),
-                valueLabel = "${offsetYPct}%",
-                steps = (MAX_OFFSET_PCT - MIN_OFFSET_PCT) / 2 - 1,
-                enabled = enabled,
-                onValueChangeFinished = applyGeometry,
-            )
-            SettingDivider()
-            SettingSliderRow(
-                title = stringResource(R.string.settings_display_scale),
-                description = stringResource(R.string.settings_display_scale_desc),
-                value = scalePct.toFloat(),
-                onValueChange = { scalePct = it.roundToInt() },
-                valueRange = MIN_SCALE_PCT.toFloat()..MAX_SCALE_PCT.toFloat(),
-                valueLabel = "${scalePct}%",
-                steps = (MAX_SCALE_PCT - MIN_SCALE_PCT) / 2 - 1,
-                enabled = enabled,
-                onValueChangeFinished = applyGeometry,
-            )
+    var enabled by remember { mutableStateOf(prefs.getBoolean(BlindSpotPreferences.KEY_ENABLED, false)) }
+    var thresholdKmh by remember {
+        mutableStateOf(prefs.getInt(
+            BlindSpotPreferences.KEY_THRESHOLD_KMH, BlindSpotPreferences.DEFAULT_THRESHOLD_KMH))
+    }
+    var pipWidthPct by remember {
+        mutableStateOf(prefs.getInt(
+            BlindSpotPreferences.KEY_PIP_WIDTH_PCT, BlindSpotPreferences.DEFAULT_PIP_WIDTH_PCT))
+    }
+    var bsdGlow by remember { mutableStateOf(prefs.getBoolean(BlindSpotPreferences.KEY_BSD_GLOW, true)) }
+    var bothOnMain by remember {
+        mutableStateOf(prefs.getBoolean(BlindSpotPreferences.KEY_BOTH_ON_MAIN, false))
+    }
+
+    // Drag-to-place preview: it lives in a WindowManager overlay, so leaving the screen has to
+    // take it down explicitly. The flag follows the window rather than the clicks — the overlay
+    // also goes away on its own idle timer.
+    val placingState = remember { mutableStateOf(false) }
+    var placing by placingState
+    val positionOverlay = remember {
+        BlindSpotPositionOverlay().apply { onHidden = { placingState.value = false } }
+    }
+    // MainActivity survives configuration changes, so onDispose alone never fires when the driver
+    // goes Home — an opaque touchable window would stay over whatever is on screen.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) positionOverlay.hide()
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            positionOverlay.hide()
+        }
+    }
+
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* denial is answered by the pipeline itself: the camera simply never opens */ }
+
+    SettingCollapsibleCard(
+        title = stringResource(R.string.settings_blindspot_header),
+        subtitle = stringResource(
+            R.string.settings_display_card_blindspot_sub,
+            stringResource(
+                if (enabled) R.string.settings_display_state_on
+                else R.string.settings_display_state_off
+            ),
+        ),
+        checked = enabled,
+        onCheckedChange = {
+            enabled = it
+            prefs.edit().putBoolean(BlindSpotPreferences.KEY_ENABLED, it).apply()
+            if (it && ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                cameraPermLauncher.launch(Manifest.permission.CAMERA)
+            }
+            // Switching off disables the "Готово" row too, so the overlay has to be taken
+            // down here or nothing on screen can dismiss it.
+            if (!it) positionOverlay.hide()
+        },
+    ) {
+        SettingSliderRow(
+            title = stringResource(R.string.settings_blindspot_threshold_title),
+            description = stringResource(R.string.settings_blindspot_threshold_desc),
+            value = thresholdKmh.toFloat(),
+            onValueChange = { thresholdKmh = it.roundToInt() },
+            valueRange = BlindSpotPreferences.MIN_THRESHOLD_KMH.toFloat()..
+                BlindSpotPreferences.MAX_THRESHOLD_KMH.toFloat(),
+            valueLabel = "$thresholdKmh ${stringResource(R.string.auto_unit_kmh)}",
+            steps = (BlindSpotPreferences.MAX_THRESHOLD_KMH - BlindSpotPreferences.MIN_THRESHOLD_KMH) / 5 - 1,
+            enabled = enabled,
+            onValueChangeFinished = {
+                prefs.edit().putInt(BlindSpotPreferences.KEY_THRESHOLD_KMH, thresholdKmh).apply()
+            },
+        )
+        SettingDivider()
+        SettingSliderRow(
+            title = stringResource(R.string.settings_blindspot_pip_width_title),
+            description = stringResource(R.string.settings_blindspot_pip_width_desc),
+            value = pipWidthPct.toFloat(),
+            onValueChange = { pipWidthPct = it.roundToInt() },
+            valueRange = BlindSpotPreferences.MIN_PIP_WIDTH_PCT.toFloat()..
+                BlindSpotPreferences.MAX_PIP_WIDTH_PCT.toFloat(),
+            valueLabel = "${pipWidthPct}%",
+            steps = (BlindSpotPreferences.MAX_PIP_WIDTH_PCT - BlindSpotPreferences.MIN_PIP_WIDTH_PCT) / 2 - 1,
+            enabled = enabled,
+            onValueChangeFinished = {
+                prefs.edit().putInt(BlindSpotPreferences.KEY_PIP_WIDTH_PCT, pipWidthPct).apply()
+                if (placing) positionOverlay.refreshSize()
+            },
+        )
+        SettingDivider()
+        SettingActionRow(
+            title = stringResource(R.string.settings_blindspot_position_title),
+            description = stringResource(R.string.settings_blindspot_position_desc),
+            buttonLabel = stringResource(
+                if (placing) R.string.settings_blindspot_position_done
+                else R.string.settings_blindspot_position_button
+            ),
+            onClick = {
+                if (placing) positionOverlay.hide() else placing = positionOverlay.show(context)
+            },
+            enabled = enabled,
+        )
+        SettingDivider()
+        SettingToggleRow(
+            title = stringResource(R.string.settings_blindspot_both_main_title),
+            description = stringResource(R.string.settings_blindspot_both_main_desc),
+            checked = bothOnMain,
+            onCheckedChange = {
+                bothOnMain = it
+                prefs.edit().putBoolean(BlindSpotPreferences.KEY_BOTH_ON_MAIN, it).apply()
+            },
+            enabled = enabled,
+        )
+        SettingDivider()
+        SettingToggleRow(
+            title = stringResource(R.string.settings_blindspot_glow_title),
+            description = stringResource(R.string.settings_blindspot_glow_desc),
+            checked = bsdGlow,
+            onCheckedChange = {
+                bsdGlow = it
+                prefs.edit().putBoolean(BlindSpotPreferences.KEY_BSD_GLOW, it).apply()
+            },
+            enabled = enabled,
+        )
+        SettingHint(text = stringResource(R.string.settings_blindspot_hint))
     }
 }
 
@@ -1480,22 +1802,265 @@ private fun steeringButtonLabel(keyCode: Int): String {
     else stringResource(R.string.steering_button_unknown, keyCode)
 }
 
-private sealed interface LearnUiState {
+/**
+ * «Разделение экрана» settings section.
+ *
+ * Controls the split-screen 1/3+2/3 feature:
+ *   1. Master toggle — writes to SplitPreferences and realigns enable_freeform_support via
+ *      ClusterProjectionManager.realignFreeformFlag().
+ *   2. Reboot hint — shown when freeform was not yet active at the time split was enabled
+ *      (flag is read once at boot). Mirrors the projection section's mechanism.
+ *   3. Clear-last-pair row — lets the user discard the saved pair so the next launch
+ *      opens the picker instead of the saved apps.
+ */
+@Composable
+private fun SplitSection() {
+    val context = LocalContext.current
+    val entryPoint = remember {
+        EntryPointAccessors.fromApplication(context.applicationContext, ClusterEntryPoint::class.java)
+    }
+    val splitPrefs = remember { entryPoint.splitPreferences() }
+    val clusterPrefs = remember {
+        context.getSharedPreferences(ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    var splitEnabled by remember { mutableStateOf(splitPrefs.isFeatureEnabled()) }
+    var nativeMode by remember { mutableStateOf(splitPrefs.isNativeModeEnabled()) }
+    var hasLastPair by remember { mutableStateOf(splitPrefs.getLastPair() != null) }
+    var splitRebootPending by remember {
+        mutableStateOf(clusterPrefs.getBoolean(ClusterProjectionManager.KEY_SPLIT_FREEFORM_REBOOT_PENDING, false))
+    }
+    // Latched by the split runtime, never from this screen, so a read on entering composition is
+    // enough. bootCount is only consulted by noteUnavailable(), hence the stub.
+    val splitFreeformUnsupported = remember {
+        SplitFreeformVerdict(clusterPrefs, bootCount = { -1 }).unsupported()
+    }
+    // Platformized firmware (OTA V1.6): the native 3:7 split is the only mechanism there, so the
+    // screen states the fact instead of offering a choice that has one outcome.
+    val split37Firmware = remember { Split37Engine.isPlatformizedFirmware() }
+    var clearStatus by remember { mutableStateOf<String?>(null) }
+    // "?" badge on the section header; the text it toggles is the first block inside the card.
+    var howToOpen by remember { mutableStateOf(false) }
+
+    // App pair picker state. Initialized from the stored pair; updated on every pick or clear.
+    var displayWidePkg by remember { mutableStateOf(splitPrefs.getLastPair()?.widePkg) }
+    var displayNarrowPkg by remember { mutableStateOf(splitPrefs.getLastPair()?.narrowPkg) }
+    // Non-null while a picker dialog is open; identifies which role is being configured.
+    var openPicker by remember { mutableStateOf<SplitRole?>(null) }
+
+    SectionHeader(
+        text = stringResource(R.string.settings_section_split_title),
+        onHelp = { howToOpen = !howToOpen },
+    )
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // How-to text lives inside the card (like every other SettingHint) even though the
+            // "?" that toggles it sits on the section header just above.
+            if (howToOpen) {
+                SettingHint(text = stringResource(R.string.settings_split_howto_body))
+                SettingDivider()
+            }
+            SettingToggleRow(
+                title = stringResource(R.string.settings_split_enable_title),
+                description = stringResource(R.string.settings_split_enable_desc),
+                checked = splitEnabled,
+                onCheckedChange = { enabled ->
+                    splitPrefs.setFeatureEnabled(enabled)
+                    splitEnabled = enabled
+                    if (enabled) {
+                        // Arm the reboot hint when enabling split while freeform is not yet live
+                        // (direct projection is off → flag was 0). Mirrors the projection section's
+                        // KEY_FREEFORM_REBOOT_PENDING mechanism for the split consumer.
+                        ClusterProjectionManager.armSplitRebootHintIfNeeded(context, splitEnabled = true)
+                        splitRebootPending = clusterPrefs.getBoolean(
+                            ClusterProjectionManager.KEY_SPLIT_FREEFORM_REBOOT_PENDING, false)
+                    } else {
+                        ClusterProjectionManager.clearSplitRebootHint(context)
+                        splitRebootPending = false
+                    }
+                    // force=true on explicit disable: bypass the passive-user guard so the flag
+                    // is written to 0 even when no projection transport has been chosen (Fix 2).
+                    ClusterProjectionManager.realignFreeformFlag(
+                        context, entryPoint.helperClient(), entryPoint.helperBootstrap(),
+                        force = !enabled)
+                },
+            )
+            if (splitEnabled && split37Firmware) {
+                SettingDivider()
+                SettingHint(text = stringResource(R.string.settings_split_mechanism_platformized_hint))
+            } else if (splitEnabled) {
+                SettingDivider()
+                // Mechanism selector: our own freeform panes vs handing the pair to the
+                // firmware's split. Native is the fallback for firmwares that gate freeform.
+                SettingChipRow(
+                    title = stringResource(R.string.settings_split_mechanism_title),
+                    options = listOf(
+                        stringResource(R.string.settings_split_mechanism_freeform),
+                        stringResource(R.string.settings_split_mechanism_native),
+                    ),
+                    selectedIndex = if (nativeMode) 1 else 0,
+                    onSelect = { index ->
+                        val native = index == 1
+                        if (native != nativeMode) {
+                            splitPrefs.setNativeModeEnabled(native)
+                            nativeMode = native
+                        }
+                    },
+                )
+                if (nativeMode) {
+                    SettingHint(text = stringResource(R.string.settings_split_mechanism_native_hint))
+                }
+            }
+            // Reboot hint: shown when split was enabled while freeform was not yet active.
+            // enable_freeform_support is read once at boot, so a restart is required. Once the
+            // firmware is proven to ignore the flag (#139) the reboot advice is wrong — say so,
+            // and point at the native mechanism, which does not depend on that flag. Both hints
+            // are about freeform only, so the native mechanism — and a firmware that only has
+            // the native one — hides them.
+            if (splitEnabled && !nativeMode && !split37Firmware &&
+                (splitFreeformUnsupported || splitRebootPending)) {
+                val hint = if (splitFreeformUnsupported) {
+                    stringResource(R.string.split_freeform_unsupported_hint) + " " +
+                        stringResource(R.string.settings_split_try_native_hint)
+                } else {
+                    stringResource(R.string.split_freeform_reboot_hint)
+                }
+                SettingHint(text = hint)
+            }
+            if (splitEnabled) {
+                SettingDivider()
+                SettingValueRow(
+                    title = stringResource(R.string.settings_split_wide_app_title),
+                    value = displayWidePkg?.let { resolveAppLabel(context, it) }
+                        ?: stringResource(R.string.settings_split_app_not_selected),
+                    onClick = {
+                        // Refresh display from the stored pair so the exclusion set and
+                        // current-app highlight reflect any external change (e.g. overlay picker).
+                        splitPrefs.getLastPair()?.let {
+                            displayWidePkg = it.widePkg
+                            displayNarrowPkg = it.narrowPkg
+                        }
+                        openPicker = SplitRole.WIDE
+                    },
+                )
+                SettingDivider()
+                SettingValueRow(
+                    title = stringResource(R.string.settings_split_narrow_app_title),
+                    value = displayNarrowPkg?.let { resolveAppLabel(context, it) }
+                        ?: stringResource(R.string.settings_split_app_not_selected),
+                    onClick = {
+                        splitPrefs.getLastPair()?.let {
+                            displayWidePkg = it.widePkg
+                            displayNarrowPkg = it.narrowPkg
+                        }
+                        openPicker = SplitRole.NARROW
+                    },
+                )
+            }
+            SettingDivider()
+            SettingActionRow(
+                title = stringResource(R.string.settings_split_clear_pair_title),
+                description = stringResource(R.string.settings_split_clear_pair_desc),
+                buttonLabel = stringResource(R.string.settings_split_clear_pair_title),
+                onClick = {
+                    splitPrefs.clearLastPair()
+                    hasLastPair = false
+                    displayWidePkg = null
+                    displayNarrowPkg = null
+                    clearStatus = context.getString(R.string.settings_split_pair_cleared)
+                },
+                style = SettingButtonStyle.Secondary,
+                enabled = hasLastPair && splitEnabled,
+            )
+            clearStatus?.let {
+                Text(it, color = AccentGreen, fontSize = 12.sp)
+            }
+        }
+    }
+
+    // Picker for the wide (2/3) app.
+    if (openPicker == SplitRole.WIDE) {
+        val excludedPkg = displayNarrowPkg
+        AppLaunchPickerDialog(
+            currentPackage = splitPrefs.getLastPair()?.widePkg ?: "",
+            excludedPackages = if (excludedPkg != null) setOf(excludedPkg) else emptySet(),
+            onDismiss = { openPicker = null },
+            onSelect = { pkg, _ ->
+                val result = applyPick(
+                    stored = splitPrefs.getLastPair(),
+                    pendingOther = displayNarrowPkg,
+                    role = SplitRole.WIDE,
+                    pkg = pkg,
+                )
+                if (result != null) {
+                    splitPrefs.saveLastPair(result)
+                    hasLastPair = true
+                    displayWidePkg = result.widePkg
+                    displayNarrowPkg = result.narrowPkg
+                } else {
+                    displayWidePkg = pkg
+                }
+                clearStatus = null
+                openPicker = null
+            },
+        )
+    }
+
+    // Picker for the narrow (1/3) app.
+    if (openPicker == SplitRole.NARROW) {
+        val excludedPkg = displayWidePkg
+        AppLaunchPickerDialog(
+            currentPackage = splitPrefs.getLastPair()?.narrowPkg ?: "",
+            excludedPackages = if (excludedPkg != null) setOf(excludedPkg) else emptySet(),
+            onDismiss = { openPicker = null },
+            onSelect = { pkg, _ ->
+                val result = applyPick(
+                    stored = splitPrefs.getLastPair(),
+                    pendingOther = displayWidePkg,
+                    role = SplitRole.NARROW,
+                    pkg = pkg,
+                )
+                if (result != null) {
+                    splitPrefs.saveLastPair(result)
+                    hasLastPair = true
+                    displayWidePkg = result.widePkg
+                    displayNarrowPkg = result.narrowPkg
+                } else {
+                    displayNarrowPkg = pkg
+                }
+                clearStatus = null
+                openPicker = null
+            },
+        )
+    }
+}
+
+internal sealed interface LearnUiState {
     data object Waiting : LearnUiState
     data class Rejected(val keyCode: Int) : LearnUiState
+    /** Assignable key, but already taken by another feature; [reason] explains which one. */
+    data class Occupied(val keyCode: Int, val reason: String) : LearnUiState
     data class Captured(val keyCode: Int) : LearnUiState
     data object TimedOut : LearnUiState
 }
 
 /**
  * Learn-the-button dialog. Puts SteeringWheelKeyService into learn mode while open and collects the
- * captured key from its StateFlow (same process). States: Waiting → (Rejected loops) → Captured
- * (confirm) / TimedOut. learnMode is always cleared on dispose.
+ * captured key from its StateFlow (same process). States: Waiting → (Rejected/Occupied loop) →
+ * Captured (confirm) / TimedOut. learnMode is always cleared on dispose.
+ *
+ * [occupiedReason] lets a caller veto an otherwise assignable key: a non-null text means "this key
+ * already does something else" and is shown while the dialog keeps waiting for another key.
  */
 @Composable
-private fun LearnButtonDialog(
+internal fun LearnButtonDialog(
     onSave: (Int) -> Unit,
     onDismiss: () -> Unit,
+    occupiedReason: (Int) -> String? = { null },
 ) {
     var state by remember { mutableStateOf<LearnUiState>(LearnUiState.Waiting) }
 
@@ -1516,20 +2081,27 @@ private fun LearnButtonDialog(
         SteeringWheelKeyService.capturedKey
             .filterNotNull()
             .collect { r ->
-                state = if (r.assignable) {
-                    SteeringWheelKeyService.learnMode = false
-                    LearnUiState.Captured(r.keyCode)
-                } else {
-                    LearnUiState.Rejected(r.keyCode)
+                val occupied = if (r.assignable) occupiedReason(r.keyCode) else null
+                state = when {
+                    !r.assignable -> LearnUiState.Rejected(r.keyCode)
+                    // The service clears learn mode on capture; re-arm so the next press is caught.
+                    occupied != null -> {
+                        SteeringWheelKeyService.learnMode = true
+                        LearnUiState.Occupied(r.keyCode, occupied)
+                    }
+                    else -> {
+                        SteeringWheelKeyService.learnMode = false
+                        LearnUiState.Captured(r.keyCode)
+                    }
                 }
             }
     }
 
     // Timeout while still waiting/rejected (no assignable capture yet).
     LaunchedEffect(state) {
-        if (state is LearnUiState.Waiting || state is LearnUiState.Rejected) {
+        if (state.isWaitingForKey()) {
             delay(10_000)
-            if (state is LearnUiState.Waiting || state is LearnUiState.Rejected) {
+            if (state.isWaitingForKey()) {
                 SteeringWheelKeyService.learnMode = false
                 state = LearnUiState.TimedOut
             }
@@ -1558,6 +2130,13 @@ private fun LearnButtonDialog(
                 is LearnUiState.Rejected -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.learn_button_rejected))
                     Text(steeringButtonLabel(s.keyCode), color = TextSecondary, fontSize = 12.sp)
+                }
+                is LearnUiState.Occupied -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(s.reason)
+                    Text(
+                        "${steeringButtonLabel(s.keyCode)} (${s.keyCode})",
+                        color = TextSecondary, fontSize = 12.sp,
+                    )
                 }
                 is LearnUiState.Captured -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.learn_button_captured))
@@ -1593,10 +2172,23 @@ private fun LearnButtonDialog(
     )
 }
 
+/** True while the dialog is still expecting a key press (nothing accepted yet). */
+private fun LearnUiState.isWaitingForKey(): Boolean =
+    this is LearnUiState.Waiting || this is LearnUiState.Rejected || this is LearnUiState.Occupied
+
 
 @Composable
-private fun ServiceSection(state: SettingsUiState, viewModel: SettingsViewModel) {
+private fun ServiceSection(
+    state: SettingsUiState,
+    viewModel: SettingsViewModel,
+) {
     val context = LocalContext.current
+    val clusterPrefs = remember {
+        context.getSharedPreferences(ClusterProjectionManager.PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    val clusterEntryPoint = remember {
+        EntryPointAccessors.fromApplication(context.applicationContext, ClusterEntryPoint::class.java)
+    }
 
     // SAF picker for restore — must be declared at composable top level
     val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -1683,6 +2275,67 @@ private fun ServiceSection(state: SettingsUiState, viewModel: SettingsViewModel)
         )
     }
 
+    // Car system: settings that change the head unit itself, not the app.
+    SectionHeader(text = stringResource(R.string.settings_car_system_header))
+
+    // Volume-knob press → play/pause. The interception lives in the a11y key filter, so turning
+    // the switch on self-enables it via the daemon, exactly like the projection card.
+    var knobPlayPause by remember {
+        mutableStateOf(clusterPrefs.getBoolean(ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE, false))
+    }
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp)) {
+            SettingToggleRow(
+                title = stringResource(R.string.settings_knob_play_pause_title),
+                description = stringResource(R.string.settings_knob_play_pause_desc),
+                checked = knobPlayPause,
+                onCheckedChange = {
+                    knobPlayPause = it
+                    clusterPrefs.edit().putBoolean(ClusterProjectionManager.KEY_KNOB_PLAY_PAUSE, it).apply()
+                    if (it) {
+                        ClusterProjectionManager.enableStarControl(
+                            clusterEntryPoint.helperClient(), clusterEntryPoint.helperBootstrap())
+                    }
+                },
+            )
+        }
+    }
+
+    // Hidden BYD language dialog (UI7 only). We never write the locale ourselves — the button just
+    // opens the factory dialog, and the card stays hidden on firmwares that do not ship it.
+    val localeIntent = remember { Intent("android.settings.LOCALE_SETTINGS1") }
+    val localeDialogAvailable = remember {
+        context.packageManager.resolveActivity(localeIntent, 0) != null
+    }
+    if (localeDialogAvailable) {
+        val localeUnavailableToast = stringResource(R.string.settings_car_language_unavailable)
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                SettingActionRow(
+                    title = stringResource(R.string.settings_car_language_title),
+                    description = stringResource(R.string.settings_car_language_desc),
+                    buttonLabel = stringResource(R.string.settings_car_language_button),
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(localeIntent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.onFailure {
+                            Toast.makeText(context, localeUnavailableToast, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
     // Autostart status card
     SectionHeader(text = stringResource(R.string.settings_autostart_header))
     Card(
@@ -1713,6 +2366,21 @@ private fun ServiceSection(state: SettingsUiState, viewModel: SettingsViewModel)
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
+            // Quiet foreground notification: the service picks the channel up on its next
+            // notification refresh (a few seconds), no restart needed.
+            var quietNotification by remember {
+                mutableStateOf(clusterPrefs.getBoolean(com.bydmate.app.service.TrackingService.KEY_QUIET_NOTIFICATION, false))
+            }
+            SettingToggleRow(
+                title = stringResource(R.string.settings_quiet_notification_title),
+                description = stringResource(R.string.settings_quiet_notification_desc),
+                checked = quietNotification,
+                onCheckedChange = {
+                    quietNotification = it
+                    clusterPrefs.edit().putBoolean(com.bydmate.app.service.TrackingService.KEY_QUIET_NOTIFICATION, it).apply()
+                },
+            )
+            SettingDivider()
             SettingActionRow(
                 title = stringResource(R.string.settings_export_csv_button),
                 description = stringResource(R.string.settings_export_csv_desc),
@@ -1760,6 +2428,18 @@ private fun ServiceSection(state: SettingsUiState, viewModel: SettingsViewModel)
             if (state.configStatus != null) {
                 SettingHint(
                     text = state.configStatus!!,
+                )
+            }
+            SettingDivider()
+            SettingActionRow(
+                title = stringResource(R.string.settings_fid_dump_button),
+                description = stringResource(R.string.settings_fid_dump_desc),
+                buttonLabel = stringResource(R.string.settings_fid_dump_button),
+                onClick = { viewModel.dumpFids() },
+            )
+            if (state.fidDumpStatus != null) {
+                SettingHint(
+                    text = state.fidDumpStatus!!,
                 )
             }
         }
@@ -2006,6 +2686,36 @@ private fun VoiceSettingsContent(
                 selectedIndex = genderIds.indexOf(state.agentGender).coerceAtLeast(0),
                 onSelect = { viewModel.setAgentGender(genderIds[it]) },
             )
+        }
+    }
+
+    // Driver memory: what the agent remembered about the driver, plus a way to wipe it
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = CardSurfaceElevated),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Facts can appear or vanish while Settings is closed -- reload them on entry.
+            LaunchedEffect(Unit) { viewModel.refreshAgentMemory() }
+            SettingActionRow(
+                title = stringResource(R.string.settings_agent_memory_title),
+                description = stringResource(R.string.settings_agent_memory_hint),
+                buttonLabel = stringResource(R.string.settings_agent_memory_forget_all),
+                onClick = { viewModel.forgetAgentMemory() },
+                enabled = state.agentMemoryFacts.isNotEmpty(),
+            )
+            if (state.agentMemoryFacts.isEmpty()) {
+                Text(
+                    stringResource(R.string.settings_agent_memory_empty),
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                )
+            } else {
+                state.agentMemoryFacts.forEach { fact ->
+                    Text("\u2022 $fact", color = TextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+                }
+            }
         }
     }
 
@@ -2515,9 +3225,10 @@ private fun LanguageBlock(
     // No Activity.recreate(): MainActivity listens to LocalePreferences,
     // mutates Resources.configuration in place, and re-provides
     // LocalConfiguration so every stringResource recomposes on next frame.
-    val langCodes = listOf("ru", "en", "zh", "pt")
+    val langCodes = listOf("ru", "en", "zh", "pt", "pl", "be")
     val langLabels = listOf(
         stringResource(R.string.settings_lang_russian), "English", "简体中文", "Português",
+        "Polski", "Беларуская",
     )
     SectionHeader(text = stringResource(R.string.settings_language_title))
     Card(
@@ -2705,14 +3416,21 @@ private fun SearchStatusCard(state: SettingsUiState) {
 }
 
 @Composable
-private fun SectionHeader(text: String) {
-    Text(
-        text = text,
-        color = TextPrimary,
-        fontSize = 16.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.fillMaxWidth()
-    )
+private fun SectionHeader(text: String, onHelp: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = TextPrimary,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f)
+        )
+        // Optional "?" badge (SettingHelpBadge idiom) for sections that need a how-to.
+        if (onHelp != null) SettingHelpBadge(onHelp)
+    }
 }
 
 @Composable
@@ -2721,7 +3439,8 @@ private fun SettingsTextField(
     value: String,
     onValueChange: (String) -> Unit,
     keyboardType: KeyboardType,
-    secret: Boolean = false
+    secret: Boolean = false,
+    singleLine: Boolean = true
 ) {
     // Secret fields (API keys, tokens) are masked so screenshots and over-the-shoulder
     // looks do not leak them; the eye icon reveals the value while editing.
@@ -2730,7 +3449,8 @@ private fun SettingsTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
-        singleLine = true,
+        singleLine = singleLine,
+        minLines = if (singleLine) 1 else 2,
         visualTransformation = if (secret && !revealed) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         trailingIcon = if (secret) {
